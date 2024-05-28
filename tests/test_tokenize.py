@@ -24,7 +24,7 @@ from .utils_tests import (
     tokenize_and_check_equals,
 )
 
-MMM_BASE_TOKENIZATIONS = ("TSD", "REMI", "MIDILike")
+MMM_BASE_TOKENIZATIONS = ("TSD", "REMI", "MIDILike", "MIREX")
 
 # Removing "hard" MIDIs from the list
 MIDI_PATHS_ONE_TRACK = [
@@ -148,12 +148,13 @@ TOK_PARAMS_MULTITRACK = []
 tokenizations_non_one_stream = [
     "TSD",
     "REMI",
+    "MIREX",
     "MIDILike",
     "Structured",
     "CPWord",
     "Octuple",
 ]
-tokenizations_program_change = ["TSD", "REMI", "MIDILike"]
+tokenizations_program_change = ["TSD", "REMI", "MIREX", "MIDILike"]
 for tokenization_ in ALL_TOKENIZATIONS:
     params_ = deepcopy(default_params)
     if tokenization_ == "MMM":

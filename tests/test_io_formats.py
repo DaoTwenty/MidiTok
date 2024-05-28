@@ -36,6 +36,7 @@ default_params.update(
 tokenizations_no_one_stream = [
     "TSD",
     "REMI",
+    "MIREX",
     "MIDILike",
     "Structured",
     "CPWord",

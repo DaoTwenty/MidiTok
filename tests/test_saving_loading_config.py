@@ -30,6 +30,7 @@ TOK_PARAMS_MULTITRACK = []
 tokenizations_non_one_stream = [
     "TSD",
     "REMI",
+    "MIREX",
     "MIDILike",
     "Structured",
     "CPWord",

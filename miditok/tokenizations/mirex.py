@@ -71,6 +71,7 @@ class MIREX(MusicTokenizer):
             and "max_bar_embedding" not in tokenizer_config.additional_params
         ):
             tokenizer_config.additional_params["max_bar_embedding"] = max_bar_embedding
+        tokenizer_config.use_microtiming = True
         super().__init__(tokenizer_config, params)
 
     def _tweak_config_before_creating_voc(self) -> None:
