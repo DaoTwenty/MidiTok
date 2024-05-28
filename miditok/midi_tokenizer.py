@@ -199,6 +199,22 @@ class MusicTokenizer(ABC, HFHubMixin):
         self.velocities = np.linspace(
             0, 127, self.config.num_velocities + 1, dtype=np.intc
         )[1:]
+
+        # Microtiming delta t values
+        # All tokens in base self.config.microtime_base from self.config.max_microtime_depth
+        # to minimum quantized position value 
+        if self.config.use_microtiming:
+            max_depth = self.config.max_microtime_depth
+            base = self.config.microtime_base
+            max_ts_denominator = max(self.config.time_signature_range.keys())
+            self.max_ticks_per_beat = compute_ticks_per_bar(max_ts_denominator, self.time_division)
+            self.max_pos_ticks = self.max_ticks_per_beat // self.config.max_num_pos_per_beat
+            self.microtime_min_res = np.floor(np.emath.logn(base, max_depth))
+            self.microtime_max_res = np.floor(np.emath.logn(base, self.max_pos_ticks))
+            self.microtimes = np.arange(
+                0, base * (self.microtime_max_res - self.microtime_min_res),  dtype=np.intc
+            )
+
         self._first_beat_res = next(iter(self.config.beat_res.values()))
         for beat_range, res in self.config.beat_res.items():
             if 0 in beat_range:
@@ -1036,6 +1052,7 @@ class MusicTokenizer(ABC, HFHubMixin):
             or (self.config.use_sustain_pedals and self.config.sustain_pedal_duration)
             or self.config.use_chords
             or self.config.use_pitch_intervals
+            or self.config.use_microtiming
         ):
             if self.config.use_time_signatures:
                 ticks_per_beat = get_score_ticks_per_beat(score)
@@ -1834,6 +1851,10 @@ class MusicTokenizer(ABC, HFHubMixin):
                 f"Duration_{'.'.join(map(str, duration))}"
                 for duration in self.durations
             ]
+
+        # Microtiming
+        if self.config.use_microtiming:
+            vocab += [f"Delta_{i}" for i in self.microtimes]
 
     def _add_additional_tokens_to_vocab_list(self, vocab: list[str]) -> None:
         # PitchInterval
@@ -3050,6 +3071,15 @@ class MusicTokenizer(ABC, HFHubMixin):
                         err_time += 1  # token position value <= to the current pos
                     current_pos = int(event_value)
                     current_pitches = {p: [] for p in self.config.programs}
+                # Because microtiming tokens are respresentation by base decomposition in ascending index (max_res to min_res)
+                elif event_type == "Delta":
+                    previous_type_delta = previous_type
+                    previous_value_delta = tokens[ti - 1].split("_")[1]
+                    while previous_type_delta == "Delta":
+                        if event_value < previous_value_delta:
+                            err_time += 1
+                        previous_type_delta = tokens[ti - 1].split("_")[0]
+                        previous_value_delta = tokens[ti - 1].split("_")[1]
                 elif event_type == "Program":  # reset
                     current_program = int(event_value)
             # Bad token type

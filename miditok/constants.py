@@ -47,6 +47,7 @@ USE_SUSTAIN_PEDALS = False
 USE_PITCH_BENDS = False
 USE_PROGRAMS = False
 USE_PITCHDRUM_TOKENS = True
+USE_MICROTIMING = False
 
 # Pitch as intervals
 USE_PITCH_INTERVALS = False
@@ -110,6 +111,10 @@ PROGRAM_CHANGES = False
 # Note: we ignore the "Applause" at pitch 88 of the orchestra drum set, increase to 89
 # if you need it.
 DRUM_PITCH_RANGE = (27, 88)
+
+# Microtiming
+MAX_MICROTIME_DEPTH = 1
+MICROTIME_BASE = 10
 
 # Other
 REMOVE_DUPLICATED_NOTES = False

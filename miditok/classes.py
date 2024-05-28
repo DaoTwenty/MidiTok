@@ -28,6 +28,8 @@ from .constants import (
     LOG_TEMPOS,
     MANDATORY_SPECIAL_TOKENS,
     MAX_PITCH_INTERVAL,
+    MAX_MICROTIME_DEPTH,
+    MICROTIME_BASE,
     NUM_TEMPOS,
     NUM_VELOCITIES,
     ONE_TOKEN_STREAM_FOR_PROGRAMS,
@@ -50,6 +52,7 @@ from .constants import (
     USE_SUSTAIN_PEDALS,
     USE_TEMPOS,
     USE_TIME_SIGNATURE,
+    USE_MICROTIMING
 )
 
 if TYPE_CHECKING:
@@ -522,6 +525,7 @@ class TokenizerConfig:
         use_sustain_pedals: bool = USE_SUSTAIN_PEDALS,
         use_pitch_bends: bool = USE_PITCH_BENDS,
         use_programs: bool = USE_PROGRAMS,
+        use_microtiming: bool = USE_MICROTIMING,
         use_pitch_intervals: bool = USE_PITCH_INTERVALS,
         use_pitchdrum_tokens: bool = USE_PITCHDRUM_TOKENS,
         beat_res_rest: dict[tuple[int, int], int] = BEAT_RES_REST,
@@ -549,6 +553,8 @@ class TokenizerConfig:
         max_pitch_interval: int = MAX_PITCH_INTERVAL,
         pitch_intervals_max_time_dist: bool = PITCH_INTERVALS_MAX_TIME_DIST,
         drums_pitch_range: tuple[int, int] = DRUM_PITCH_RANGE,
+        max_microtime_depth: int = MAX_MICROTIME_DEPTH,
+        microtime_base: int = MICROTIME_BASE,
         **kwargs,
     ) -> None:
         # Checks
@@ -615,6 +621,7 @@ class TokenizerConfig:
         self.use_programs: bool = use_programs
         self.use_pitch_intervals = use_pitch_intervals
         self.use_pitchdrum_tokens = use_pitchdrum_tokens
+        self.use_microtiming: bool = use_microtiming
 
         # Rest params
         self.beat_res_rest: dict[tuple[int, int], int] = beat_res_rest
@@ -689,6 +696,10 @@ class TokenizerConfig:
                     " consider to updateyour code with this new argument name.",
                     stacklevel=2,
                 )
+
+        # Microtiming params
+        self.max_microtime_depth = max_microtime_depth
+        self.microtime_base = microtime_base
 
         # Additional params
         self.additional_params = kwargs
