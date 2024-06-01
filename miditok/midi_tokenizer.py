@@ -209,8 +209,8 @@ class MusicTokenizer(ABC, HFHubMixin):
             max_ts_denominator = max(self.config.time_signature_range.keys())
             self.max_ticks_per_beat = compute_ticks_per_bar(max_ts_denominator, self.time_division)
             self.max_pos_ticks = self.max_ticks_per_beat // self.config.max_num_pos_per_beat
-            self.microtime_min_res = np.floor(np.emath.logn(base, max_depth))
-            self.microtime_max_res = np.floor(np.emath.logn(base, self.max_pos_ticks))
+            self.microtime_min_res = int(np.floor(np.emath.logn(base, max_depth)))
+            self.microtime_max_res = int(np.floor(np.emath.logn(base, self.max_pos_ticks)))
             self.microtimes = np.arange(
                 0, base * (self.microtime_max_res - self.microtime_min_res),  dtype=np.intc
             )
