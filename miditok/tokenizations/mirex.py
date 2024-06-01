@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 class MIREX(MusicTokenizer):
     r"""
-    REMI (Revamped MIDI) tokenizer.
+    MIREX (MIDI Revamped Expressive) tokenizer.
 
     Introduced with the `Pop Music Transformer (Huang and Yang) <https://dl.acm.org/doi/10.1145/3394171.3413671>`_,
     REMI represents notes as successions of *Pitch*, *Velocity* and
@@ -40,6 +40,9 @@ class MIREX(MusicTokenizer):
     for general multi-track, multi-signature symbolic music sequences, introduced in
     `FIGARO (Rütte et al.) <https://arxiv.org/abs/2201.10936>`_, which handle multiple
     instruments by adding *Program* tokens before the *Pitch* ones.
+    This representation extends the REMI tokenization by adding microtiming tokens after *Start* tokens.
+    As a sequence length and vocabulary size compromise, multiple tokens types representating 
+    different powers of time steps allow for arbitrary time resolution in ticks.
 
     **Note:** in the original paper, the tempo information is represented as the
     succession of two token types: a *TempoClass* indicating if the tempo is fast or
