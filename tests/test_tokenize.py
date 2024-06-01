@@ -78,6 +78,7 @@ _all_add_tokens = [
 tokenizations_add_tokens = {
     "MIDILike": _all_add_tokens,
     "REMI": _all_add_tokens,
+    "MIREX": _all_add_tokens,
     "TSD": _all_add_tokens,
     "CPWord": ["use_rests", "use_tempos", "use_time_signatures"],
     "Octuple": ["use_tempos"],
