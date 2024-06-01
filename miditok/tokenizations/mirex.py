@@ -444,7 +444,7 @@ class MIREX(MusicTokenizer):
                     current_tick = tick_at_current_bar + int(tok_val) * ticks_per_pos
                 elif tok_type == "Delta":
                     res_factor = self.microtime_max_res - ( int(tok_val) // self.config.microtime_base )
-                    res_value = tok_val % self.config.microtime_base
+                    res_value = int(tok_val) % self.config.microtime_base
                     added_microtime_ticks = res_value * ( self.config.microtime_base ** res_factor )
                     current_tick = current_tick + added_microtime_ticks
                 elif tok_type in {
