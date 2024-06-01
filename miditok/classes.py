@@ -711,7 +711,7 @@ class TokenizerConfig:
 
         :return: maximum number of positions per ticks covered by the config.
         """
-        return max(self.beat_res.values())
+        return int(max(self.beat_res.values()))
 
     @classmethod
     def from_dict(cls, input_dict: dict[str, Any], **kwargs) -> TokenizerConfig:

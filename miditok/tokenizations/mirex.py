@@ -229,16 +229,20 @@ class MIREX(MusicTokenizer):
                     )
 
                     if self.config.use_microtiming:
-                        microtimes = self._get_micro_times(event.time - tick_at_current_bar, ticks_per_pos, pos_index)
-                        for m in microtimes:
-                            all_events.append(
-                                Event(
-                                    type_="Delta",
-                                    value=m,
-                                    time=event.time,
-                                    desc=event.time,
+                        try:
+                            microtimes = self._get_micro_times(event.time - tick_at_current_bar, ticks_per_pos, pos_index)
+                            for m in microtimes:
+                                all_events.append(
+                                    Event(
+                                        type_="Delta",
+                                        value=m,
+                                        time=event.time,
+                                        desc=event.time,
+                                    )
                                 )
-                            )
+                        except Exception as e:
+                            print(e)
+                            raise Exception("bruh")
 
                 previous_tick = event.time
 
