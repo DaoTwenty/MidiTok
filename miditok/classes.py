@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import warnings
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from math import log2
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -18,9 +18,6 @@ from .constants import (
     CHORD_MAPS,
     CHORD_TOKENS_WITH_ROOT_NOTE,
     CHORD_UNKNOWN,
-    CURRENT_MIDITOK_VERSION,
-    CURRENT_SYMUSIC_VERSION,
-    CURRENT_TOKENIZERS_VERSION,
     DELETE_EQUAL_SUCCESSIVE_TEMPO_CHANGES,
     DELETE_EQUAL_SUCCESSIVE_TIME_SIG_CHANGES,
     DRUM_PITCH_RANGE,
@@ -56,7 +53,7 @@ from .constants import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
 IGNORED_CONFIG_KEY_DICT = [
     "miditok_version",
@@ -79,9 +76,9 @@ class Event:
 
     type_: str
     value: str | int
-    time: int | float = None
-    program: int = None
-    desc: Any = None
+    time: int = -1
+    program: int = 0
+    desc: str | int = 0
 
     def __str__(self) -> str:
         """
@@ -124,14 +121,14 @@ class TokSequence:
     non-initialized attributes.
     """
 
-    tokens: list[str | list[str]] = None
-    ids: list[int | list[int]] = None  # can be encoded with BPE/Unigram/WordPiece
-    bytes: str = None  # noqa: A003
-    events: list[Event | list[Event]] = None
+    tokens: list[str | list[str]] = field(default_factory=list)
+    ids: list[int | list[int]] = field(default_factory=list)
+    bytes: str = field(default_factory=str)
+    events: list[Event | list[Event]] = field(default_factory=list)
     are_ids_encoded: bool = False
-    _ticks_bars: list[int] = None  # slice/add not handled
-    _ticks_beats: list[int] = None  # slice/add not handled
-    _ids_decoded: list[int | list[int]] = None
+    _ticks_bars: list[int] = field(default_factory=list)  # slice/add not handled
+    _ticks_beats: list[int] = field(default_factory=list)  # slice/add not handled
+    _ids_decoded: list[int | list[int]] = field(default_factory=list)
 
     def split_per_bars(self) -> list[TokSequence]:
         """
@@ -182,22 +179,11 @@ class TokSequence:
 
         :return: number of elements in the sequence.
         """
-        if self.ids is not None:
-            return len(self.ids)
-        if self.tokens is not None:
-            return len(self.tokens)
-        if self.events is not None:
-            return len(self.events)
-        if self.bytes is not None:
-            return len(self.bytes)
-        if self._ids_decoded is not None:
-            return len(self._ids_decoded)
-
-        msg = (
-            "This TokSequence seems to not be initialized, all its attributes "
-            "are None."
-        )
-        raise ValueError(msg)
+        for attr_ in ("ids", "tokens", "events", "bytes"):
+            if (length := len(getattr(self, attr_))) != 0:
+                return length
+        # Are all 0s
+        return 0
 
     def __getitem__(self, val: int | slice) -> int | str | Event | TokSequence:
         """
@@ -211,16 +197,10 @@ class TokSequence:
         if isinstance(val, slice):
             return self.__slice(val)
 
-        if self.ids is not None:
-            return self.ids[val]
-        if self.tokens is not None:
-            return self.tokens[val]
-        if self.events is not None:
-            return self.events[val]
-        if self.bytes is not None:
-            return self.bytes[val]
-        if self._ids_decoded is not None:
-            return self._ids_decoded[val]
+        attr_to_check = ("ids", "tokens", "events", "bytes")
+        for attr_ in attr_to_check:
+            if len(getattr(self, attr_)) > 0:
+                return getattr(self, attr_)[val]
 
         msg = (
             "This TokSequence seems to not be initialized, all its attributes "
@@ -238,11 +218,11 @@ class TokSequence:
         seq = replace(self)
         attributes = ["tokens", "ids", "bytes", "events", "_ids_decoded"]
         for attr in attributes:
-            if getattr(self, attr):
+            if len(getattr(self, attr)) > 0:
                 setattr(seq, attr, getattr(self, attr)[sli])
         return seq
 
-    def __eq__(self, other: TokSequence) -> bool:
+    def __eq__(self, other: object) -> bool:
         r"""
         Check that too sequences are equal.
 
@@ -253,12 +233,14 @@ class TokSequence:
         :param other: other sequence to compare.
         :return: ``True`` if the sequences have equal attributes.
         """
+        if not isinstance(other, TokSequence):
+            return False
         # Start from True assumption as some attributes might be unfilled (None)
         attributes = ["tokens", "ids", "bytes", "events"]
         eq = [True for _ in attributes]
         one_common_attr = False
         for i, attr in enumerate(attributes):
-            if getattr(self, attr) is not None and getattr(other, attr) is not None:
+            if len(getattr(self, attr)) > 0 and len(getattr(other, attr)) > 0:
                 eq[i] = getattr(self, attr) == getattr(other, attr)
                 one_common_attr = True
 
@@ -271,7 +253,7 @@ class TokSequence:
         The `ìds``, ``tokens``, ``events`` and ``bytes`` will be concatenated.
 
         :param other: other ``TokSequence``.
-        :return: the concatenation of the two sequences.
+        :return: the two sequences concatenated.
         """
         seq = replace(self)
         seq += other
@@ -284,7 +266,7 @@ class TokSequence:
         The `ìds``, ``tokens``, ``events`` and ``bytes`` will be concatenated.
 
         :param other: other ``TokSequence``.
-        :return: self.
+        :return: the two sequences concatenated.
         """
         if not isinstance(other, TokSequence):
             msg = (
@@ -295,10 +277,20 @@ class TokSequence:
         attributes = ["tokens", "ids", "bytes", "events", "_ids_decoded"]
         for attr in attributes:
             self_attr, other_attr = getattr(self, attr), getattr(other, attr)
-            if self_attr is not None and other_attr is not None:
-                setattr(self, attr, self_attr + other_attr)
+            setattr(self, attr, self_attr + other_attr)
 
         return self
+
+    def __radd__(self, other: TokSequence) -> TokSequence:
+        """
+        Reverse addition operation, allowing ``TokSequence``s to be summed.
+
+        :param other: other ``TokSequence``.
+        :return: the two sequences concatenated.
+        """
+        if other == 0:
+            return self
+        return self.__add__(other)
 
 
 def _format_special_token(token: str) -> str:
@@ -456,8 +448,10 @@ class TokenizerConfig:
         recurrence of this information. Leave it False if you want to have recurrent
         ``Tempo`` tokens, that you might inject yourself by adding ``symusic.Tempo``
         objects to a ``symusic.Score``. (default: ``False``)
-    :param time_signature_range: range as a dictionary
-        ``{denom_i: [num_i1, ..., num_in]/(min_num_i, max_num_i)}``.
+    :param time_signature_range: range as a dictionary. They keys are denominators
+        (beat/note value), the values can be either the list of associated numerators
+        (``{denom_i: [num_i_1, ..., num_i_n]}``) or a tuple ranging from the minimum
+        numerator to the maximum (``{denom_i: (min_num_i, max_num_i)}``).
         (default: ``{8: [3, 12, 6], 4: [5, 6, 3, 2, 1, 4]}``)
     :param sustain_pedal_duration: by default, the tokenizer will use ``PedalOff``
         tokens to mark the offset times of pedals. By setting this parameter True, it
@@ -539,7 +533,7 @@ class TokenizerConfig:
         delete_equal_successive_tempo_changes: bool = (
             DELETE_EQUAL_SUCCESSIVE_TEMPO_CHANGES
         ),
-        time_signature_range: dict[
+        time_signature_range: Mapping[
             int, list[int] | tuple[int, int]
         ] = TIME_SIGNATURE_RANGE,
         sustain_pedal_duration: bool = SUSTAIN_PEDAL_DURATION,
@@ -750,15 +744,17 @@ class TokenizerConfig:
 
         :param dict_: dictionary to serialize
         """
-        for key in dict_:
-            if isinstance(dict_[key], dict):
-                self.__serialize_dict(dict_[key])
-            elif isinstance(dict_[key], ndarray):
-                dict_[key] = dict_[key].tolist()
+        for key, value in dict_.items():
+            if key in {"beat_res", "beat_res_rest"}:
+                dict_[key] = {f"{k1}_{k2}": v for (k1, k2), v in value.items()}
+            elif isinstance(value, dict):
+                self.__serialize_dict(value)
+            elif isinstance(value, ndarray):
+                dict_[key] = value.tolist()
 
     def save_to_json(self, out_path: Path) -> None:
         r"""
-        Save a tokenizer configuration object to the `out_path` path.
+        Save a tokenizer configuration as a JSON file.
 
         :param out_path: path to the output configuration JSON file.
         """
@@ -767,13 +763,6 @@ class TokenizerConfig:
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         dict_config = self.to_dict(serialize=True)
-        for beat_res_key in ["beat_res", "beat_res_rest"]:
-            dict_config[beat_res_key] = {
-                f"{k1}_{k2}": v for (k1, k2), v in dict_config[beat_res_key].items()
-            }
-        dict_config["miditok_version"] = CURRENT_MIDITOK_VERSION
-        dict_config["symusic_version"] = CURRENT_SYMUSIC_VERSION
-        dict_config["hf_tokenizers_version"] = CURRENT_TOKENIZERS_VERSION
 
         with out_path.open("w") as outfile:
             json.dump(dict_config, outfile, indent=4)
@@ -781,7 +770,7 @@ class TokenizerConfig:
     @classmethod
     def load_from_json(cls, config_file_path: Path) -> TokenizerConfig:
         r"""
-        Load a tokenizer configuration from the `config_path` path.
+        Load a tokenizer configuration from a JSON file.
 
         :param config_file_path: path to the configuration JSON file to load.
         """
@@ -806,13 +795,13 @@ class TokenizerConfig:
 
     def copy(self) -> TokenizerConfig:
         """
-        Copy the ``TokSequence``.
+        Copy the ``TokenizerConfig``.
 
-        :return: a copy of the ``TokSequence``.
+        :return: a copy of the ``TokenizerConfig``.
         """
         return deepcopy(self)
 
-    def __eq__(self, other: TokenizerConfig) -> bool:
+    def __eq__(self, other: object) -> bool:
         """
         Check two configs are equal.
 
@@ -822,6 +811,8 @@ class TokenizerConfig:
         # We don't use the == operator as it yields False when comparing lists and
         # tuples containing the same elements. This method is not recursive and only
         # checks the first level of iterable values / attributes
+        if not isinstance(other, TokenizerConfig):
+            return False
         other_dict = other.to_dict()
         for key, value in self.to_dict().items():
             if key not in other_dict:

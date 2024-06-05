@@ -1,4 +1,5 @@
 """Base tokenizer class, acting as a "framework" for all tokenizers."""
+
 from __future__ import annotations
 
 import json
@@ -61,6 +62,7 @@ from .constants import (
     SUPPORTED_MUSIC_FILE_EXTENSIONS,
     TEMPO,
     TIME_SIGNATURE,
+    TOKEN_TYPE_BEFORE_PC,
     UNIGRAM_MAX_INPUT_CHARS_PER_WORD_BAR,
     UNIGRAM_MAX_INPUT_CHARS_PER_WORD_BEAT,
     UNIGRAM_SPECIAL_TOKEN_SUFFIX,
@@ -132,7 +134,7 @@ class MusicTokenizer(ABC, HFHubMixin):
         # Loading params, or initializing them from args
         if params is not None:
             # Will overwrite self.config
-            self._load_params(params)
+            self._load_from_json(params)
         # If no TokenizerConfig is given, we falls back to the default parameters
         elif self.config is None:
             self.config = TokenizerConfig()
@@ -381,35 +383,56 @@ class MusicTokenizer(ABC, HFHubMixin):
         sorted, duplicated notes removed, as well as tempos. Empty tracks (with no
         note) will be removed from the ``symusic.Score`` object. Notes with pitches
         outside ``self.config.pitch_range`` will be deleted.
+        This method is **not inplace** and performs no alteration on the provided
+        ``score`` object.
 
         :param score: ``symusic.Score`` object to preprocess.
+        :return: the preprocessed ``score``.
         """
         # Filter time signatures.
         # We need to do this first to determine the Score's new time division.
+        # A copy of the time signatures is made here to make inplace operations without
+        # modifying the provided Score object. This copy will be set to the copy of the
+        # score after resampling it.
+        time_signatures_copy = score.time_signatures.copy()
         if self.config.use_time_signatures:
-            self._filter_unsupported_time_signatures(score.time_signatures)
+            self._filter_unsupported_time_signatures(time_signatures_copy)
             # We mock the first with 0, even if there are already time signatures. This
             # is required as if the Score only had */2 time signatures, we must make
             # sure the resampling tpq is calculated according to a maximum denom of 4
             # if the beginning of the Score is mocked at 4/4.
-            if len(score.time_signatures) == 0 or score.time_signatures[0].time != 0:
-                score.time_signatures.insert(0, TimeSignature(0, *TIME_SIGNATURE))
+            if len(time_signatures_copy) == 0 or time_signatures_copy[0].time != 0:
+                time_signatures_copy.insert(0, TimeSignature(0, *TIME_SIGNATURE))
             # The new time division is chosen depending on its highest time signature
             # denominator, and is equivalent to the highest possible tick/beat ratio.
-            max_ts_denom = max(ts.denominator for ts in score.time_signatures)
+            max_ts_denom = max(ts.denominator for ts in time_signatures_copy)
             new_tpq = int(self.config.max_num_pos_per_beat * max_ts_denom / 4)
         else:
-            # In this case, we set the time signature as being only 4/4.
-            # This is required as we will add the ticks of the bars and beats to the
-            # TokSequence, to split it per bars/beats when encoding the ids.
-            score.time_signatures = TimeSignatureTickList(
+            time_signatures_copy = TimeSignatureTickList(
                 [TimeSignature(0, *TIME_SIGNATURE)]
             )
             new_tpq = self.config.max_num_pos_per_beat
 
-        # Resample time (not inplace)
+        # Resample time if needed (not inplace) and attribute preprocessed time sig.
         if score.ticks_per_quarter != new_tpq:
+            # Times of time signatures copy need to be resampled too
+            time_signatures_soa = time_signatures_copy.numpy()
+            time_signatures_soa["time"] = (
+                time_signatures_soa["time"] * (new_tpq / score.ticks_per_quarter)
+            ).astype(np.int32)
+
             score = score.resample(new_tpq, min_dur=1)
+            score.time_signatures = TimeSignatureTickList.from_numpy(
+                time_signatures_soa["time"],
+                time_signatures_soa["numerator"],
+                time_signatures_soa["denominator"],
+            )
+        # Otherwise we do a copy in order to make sure no inplace operation is performed
+        # on the provided Score object.
+        # We make a copy here instead of at beginning as resample also makes a copy.
+        else:
+            score = score.copy()
+            score.time_signatures = time_signatures_copy
 
         # Merge instruments of the same program / inst before preprocessing them.
         # This allows to avoid potential duplicated notes in some multitrack settings
@@ -1067,14 +1090,20 @@ class MusicTokenizer(ABC, HFHubMixin):
             if self.one_token_stream:
                 all_events += track_events
             else:
+                all_events[ti] += track_events
                 if self.config.program_changes:
                     # ProgramNoteOff desc to make sure it appears before Pedals and
                     # everything else
                     program = track.program if not track.is_drum else -1
-                    track_events.insert(
-                        0, Event("Program", program, 0, desc="ProgramNoteOff")
+                    idx = 0
+                    while (
+                        idx < len(all_events)
+                        and all_events[ti][idx].type_ in TOKEN_TYPE_BEFORE_PC
+                    ):
+                        idx += 1
+                    all_events[ti].insert(
+                        idx, Event("Program", program, 0, desc="ProgramNoteOff")
                     )
-                all_events[ti] += track_events
                 self._sort_events(all_events[ti])
         if self.one_token_stream:
             self._sort_events(all_events)
@@ -1111,7 +1140,8 @@ class MusicTokenizer(ABC, HFHubMixin):
         Concerned events are: *Pitch*, *Velocity*, *Duration*, *NoteOn*, *NoteOff* and
         optionally *Chord*, *Pedal* and *PitchBend*.
         **If the tokenizer is using pitch intervals, the notes must be sorted by time
-        then pitch values. This is done in** ``preprocess_score``.
+        then pitch values. This is done in**
+        :py:func:`miditok.MusicTokenizer.preprocess_score`.
 
         :param track: ``symusic.Track`` to extract events from.
         :param ticks_per_beat: array indicating the number of ticks per beat per
@@ -1355,7 +1385,7 @@ class MusicTokenizer(ABC, HFHubMixin):
             if (
                 event.program is not None
                 and event.program != previous_program
-                and event.type_ not in ["Pedal", "PedalOff"]
+                and event.type_ not in ["Pedal", "PedalOff", *TOKEN_TYPE_BEFORE_PC]
                 and not (event.type_ == "Duration" and previous_type == "Pedal")
             ):
                 previous_program = event.program
@@ -1429,6 +1459,7 @@ class MusicTokenizer(ABC, HFHubMixin):
         self,
         score: Score | Path,
         encode_ids: bool = True,
+        no_preprocess_score: bool = False,
     ) -> TokSequence | list[TokSequence]:
         r"""
         Tokenize a music file (MIDI/abc), given as a ``symusic.Score`` or a file path.
@@ -1444,6 +1475,15 @@ class MusicTokenizer(ABC, HFHubMixin):
         :param encode_ids: the backbone model (BPE, Unigram, WordPiece) will encode the
             tokens and compress the sequence. Can only be used if the tokenizer has been
             trained. (default: ``True``)
+        :param no_preprocess_score: whether to preprocess the ``symusic.Score``. If this
+            argument is provided as ``True``, make sure that the corresponding music
+            file / ``symusic.Score`` has already been preprocessed by the tokenizer
+            (:py:func:`miditok.MusicTokenizer.preprocess_score`) or that its content is
+            aligned with the tokenizer's vocabulary, otherwise the tokenization is
+            likely to crash. This argument is useful in cases where you need to use the
+            preprocessed ``symusic.Score`` along with the tokens to not have to
+            preprocess it twice as this method preprocesses it inplace.
+            (default: ``False``)
         :return: a :class:`miditok.TokSequence` if ``tokenizer.one_token_stream`` is
             ``True``, else a list of :class:`miditok.TokSequence` objects.
         """
@@ -1452,7 +1492,8 @@ class MusicTokenizer(ABC, HFHubMixin):
             score = Score(score)
 
         # Preprocess the music file
-        score = self.preprocess_score(score)
+        if not no_preprocess_score:
+            score = self.preprocess_score(score)
 
         # Tokenize it
         tokens = self._score_to_tokens(score)
@@ -1480,17 +1521,17 @@ class MusicTokenizer(ABC, HFHubMixin):
         :param complete_bytes: will complete the bytes form of each token. This is only
             applicable if the tokenizer has been trained.
         """
-        if seq.tokens is None:
-            if seq.events is not None:
+        if len(seq.tokens) == 0:
+            if len(seq.events) > 0:
                 seq.tokens = self._events_to_tokens(seq.events)
-            elif seq.ids is not None:
+            elif len(seq.ids) > 0:
                 seq.tokens = self._ids_to_tokens(seq.ids)
-            elif seq.bytes is not None:
+            elif len(seq.bytes) > 0:
                 seq.tokens = self._bytes_to_tokens(seq.bytes)
-        if seq.ids is None:
+        if len(seq.ids) == 0:
             seq.ids = self._tokens_to_ids(seq.tokens)
 
-        if complete_bytes and self.is_trained and seq.bytes is None:
+        if complete_bytes and self.is_trained and len(seq.bytes) == 0:
             seq.bytes = self._ids_to_bytes(seq.ids, as_one_str=True)
 
     def _tokens_to_ids(
@@ -1696,7 +1737,7 @@ class MusicTokenizer(ABC, HFHubMixin):
         return np.any(np.array(ids) >= len(self.vocab))
 
     def _preprocess_tokseq_before_decoding(self, tokseq: TokSequence) -> None:
-        if tokseq.tokens is None:
+        if len(tokseq.tokens) == 0:
             if tokseq.are_ids_encoded:
                 self.decode_token_ids(tokseq)
             self.complete_sequence(tokseq)
@@ -1993,9 +2034,9 @@ class MusicTokenizer(ABC, HFHubMixin):
 
         if vocab_idx is not None:
             self._vocab_base[vocab_idx][token_str] = len(self._vocab_base[vocab_idx])
-            self.__vocab_base_inv[vocab_idx][
-                len(self.__vocab_base_inv[vocab_idx])
-            ] = token_str
+            self.__vocab_base_inv[vocab_idx][len(self.__vocab_base_inv[vocab_idx])] = (
+                token_str
+            )
         else:
             id_ = len(self._model.get_vocab()) if self.is_trained else len(self.vocab)
             self._vocab_base[token_str] = id_
@@ -3112,7 +3153,7 @@ class MusicTokenizer(ABC, HFHubMixin):
         ids_encoded = None
 
         if isinstance(tokens, TokSequence):
-            if tokens.ids is None:
+            if len(tokens.ids) == 0:
                 self.complete_sequence(tokens)
             ids_encoded = tokens.are_ids_encoded
             ids = tokens.ids
@@ -3121,7 +3162,7 @@ class MusicTokenizer(ABC, HFHubMixin):
         elif isinstance(tokens[0], TokSequence):
             ids_encoded = []
             for seq in tokens:
-                if seq.ids is None:
+                if len(seq.ids) == 0:
                     self.complete_sequence(seq)
                 ids_encoded.append(seq.are_ids_encoded)
                 ids.append(seq.ids)
@@ -3196,9 +3237,39 @@ class MusicTokenizer(ABC, HFHubMixin):
 
     def _save_pretrained(self, *args, **kwargs) -> None:  # noqa: ANN002
         # called by `ModelHubMixin.from_pretrained`.
-        self.save_params(*args, **kwargs)
+        self.save(*args, **kwargs)
 
-    def save_params(
+    def save_params(self, *args, **kwargs) -> None:  # noqa: ANN002
+        """
+        **DEPRECIATED:** save a tokenizer as a JSON file (calling ``tokenizer.save``).
+
+        :param args: positional arguments.
+        :param kwargs: keyword arguments.
+        """
+        warnings.warn(
+            "miditok: The `save_params` method had been renamed `save`. It is now "
+            "depreciated and will be removed in future updates.",
+            stacklevel=2,
+        )
+        return self.save(*args, **kwargs)
+
+    def to_dict(self) -> dict:
+        """Return the serializable dictionary form of the tokenizer."""
+        params = {
+            "config": self.config.to_dict(serialize=True),
+            "one_token_stream": self.one_token_stream,
+            "tokenization": self.__class__.__name__,
+            "miditok_version": CURRENT_MIDITOK_VERSION,
+            "symusic_version": CURRENT_SYMUSIC_VERSION,
+            "hf_tokenizers_version": CURRENT_TOKENIZERS_VERSION,
+        }
+        if self.is_trained:  # saves whole vocab if trained
+            params["_vocab_base"] = self._vocab_base
+            params["_model"] = self._model.to_str()
+            params["_vocab_base_byte_to_token"] = self._vocab_base_byte_to_token
+        return params
+
+    def save(
         self,
         out_path: str | Path,
         additional_attributes: dict | None = None,
@@ -3218,36 +3289,17 @@ class MusicTokenizer(ABC, HFHubMixin):
         :param filename: name of the file to save, to be used in case ``out_path`` leads
             to a directory. (default: ``"tokenizer.json"``)
         """
-        if additional_attributes is None:
-            additional_attributes = {}
-        if self.is_trained:  # saves whole vocab if trained
-            additional_attributes["_vocab_base"] = self._vocab_base
-            additional_attributes["_model"] = self._model.to_str()
-            additional_attributes[
-                "_vocab_base_byte_to_token"
-            ] = self._vocab_base_byte_to_token
+        tokenizer_dict = self.to_dict()
 
-        dict_config = self.config.to_dict(serialize=True)
-        for beat_res_key in ["beat_res", "beat_res_rest"]:
-            dict_config[beat_res_key] = {
-                f"{k1}_{k2}": v for (k1, k2), v in dict_config[beat_res_key].items()
-            }
-        params = {
-            "config": dict_config,
-            "one_token_stream": self.one_token_stream,
-            "tokenization": self.__class__.__name__,
-            "miditok_version": CURRENT_MIDITOK_VERSION,
-            "symusic_version": CURRENT_SYMUSIC_VERSION,
-            "hf_tokenizers_version": CURRENT_TOKENIZERS_VERSION,
-            **additional_attributes,
-        }
+        if additional_attributes:
+            tokenizer_dict.update(additional_attributes)
 
         out_path = Path(out_path)
         if out_path.is_dir() or "." not in out_path.name:
             out_path /= filename
         out_path.parent.mkdir(parents=True, exist_ok=True)
         with out_path.open("w") as outfile:
-            json.dump(params, outfile, indent=4)
+            json.dump(tokenizer_dict, outfile, indent=4)
 
     @classmethod
     def _from_pretrained(
@@ -3304,16 +3356,16 @@ class MusicTokenizer(ABC, HFHubMixin):
         miditok_module = sys.modules[".".join(__name__.split(".")[:-1])]
         return getattr(miditok_module, tokenization)(params=params_path)
 
-    def _load_params(self, config_file_path: str | Path) -> None:
+    def _load_from_json(self, file_path: str | Path) -> None:
         r"""
         Load the parameters of the tokenizer from a config file.
 
         This method is not intended to be called outside __init__, when creating a
         tokenizer.
 
-        :param config_file_path: path to the tokenizer config file (encoded as json).
+        :param file_path: path to the tokenizer JSON file.
         """
-        with Path(config_file_path).open() as param_file:
+        with Path(file_path).open() as param_file:
             params = json.load(param_file)
 
         # Grab config, or creates one with default parameters (for retro-compatibility
@@ -3491,7 +3543,7 @@ class MusicTokenizer(ABC, HFHubMixin):
         return len(self.vocab)
 
     @property
-    def len(self) -> int | list[int]:  # noqa: A003
+    def len(self) -> int | list[int]:
         r"""
         Return the length of the vocabulary.
 
