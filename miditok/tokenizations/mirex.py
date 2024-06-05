@@ -99,6 +99,10 @@ class MIREX(MusicTokenizer):
             ``symusic.Score`` being tokenized.
         :return: the same events, with time events inserted.
         """
+
+        # TODO: Move to optional in REMI, remove MIREX class
+        assert self.high_res_events is not None
+
         # Add time events
         all_events = []
         current_bar = -1
@@ -129,7 +133,7 @@ class MIREX(MusicTokenizer):
                     ticks_per_pos = ticks_per_beat // self.config.max_num_pos_per_beat
                     break
         # Add the time events
-        for event in events:
+        for i, event in enumerate(events):
             if event.time != previous_tick:
                 # (Rest)
                 if (
@@ -229,20 +233,17 @@ class MIREX(MusicTokenizer):
                     )
 
                     if self.config.use_microtiming:
-                        try:
-                            microtimes = self._get_micro_times(event.time - tick_at_current_bar, ticks_per_pos, pos_index)
-                            for m in microtimes:
-                                all_events.append(
-                                    Event(
-                                        type_="Delta",
-                                        value=m,
-                                        time=event.time,
-                                        desc=event.time,
-                                    )
+                        high_res_event = self.high_res_events[i]
+                        microtimes = self._get_micro_times(high_res_event.time - tick_at_current_bar, ticks_per_pos, pos_index)
+                        for m in microtimes:
+                            all_events.append(
+                                Event(
+                                    type_="Delta",
+                                    value=m,
+                                    time=event.time,
+                                    desc=event.time,
                                 )
-                        except Exception as e:
-                            print(e)
-                            raise Exception("bruh")
+                            )
 
                 previous_tick = event.time
 

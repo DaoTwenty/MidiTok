@@ -205,16 +205,16 @@ class MusicTokenizer(ABC, HFHubMixin):
         # Microtiming delta t values
         # All tokens in base self.config.microtime_base from self.config.max_microtime_depth
         # to minimum quantized position value 
+
         if self.config.use_microtiming:
             max_depth = self.config.max_microtime_depth
             base = self.config.microtime_base
             max_ts_denominator = max(self.config.time_signature_range.keys())
             self.max_ticks_per_beat = compute_ticks_per_bar(max_ts_denominator, self.time_division)
-            self.max_pos_ticks = self.max_ticks_per_beat // self.config.max_num_pos_per_beat
-            self.microtime_min_res = int(np.floor(np.emath.logn(base, max_depth)))
-            self.microtime_max_res = int(np.floor(np.emath.logn(base, self.max_pos_ticks)))
+            self.max_ticks_per_pos = self.max_ticks_per_beat // self.config.max_num_pos_per_beat
+            self.microtime_max_res = int(np.floor(np.emath.logn(base, self.max_ticks_per_pos // max_depth)))
             self.microtimes = np.arange(
-                0, base * (self.microtime_max_res - self.microtime_min_res),  dtype=np.intc
+                0, base * self.microtime_max_res,  dtype=np.intc
             )
 
         self._first_beat_res = next(iter(self.config.beat_res.values()))
@@ -374,7 +374,11 @@ class MusicTokenizer(ABC, HFHubMixin):
             return 0
         return int(self._tpb_to_rest_array[ticks_per_beat][0])
 
-    def preprocess_score(self, score: Score) -> Score:
+    def preprocess_score(
+            self, 
+            score: Score,
+            micro_resample: bool = False,
+        ) -> Score:
         r"""
         Pre-process a ``symusic.Score`` object to resample its time and events values.
 
@@ -387,6 +391,7 @@ class MusicTokenizer(ABC, HFHubMixin):
         ``score`` object.
 
         :param score: ``symusic.Score`` object to preprocess.
+        :param micro_resample: True if score must resample to microtiming resolution
         :return: the preprocessed ``score``.
         """
         # Filter time signatures.
@@ -412,6 +417,12 @@ class MusicTokenizer(ABC, HFHubMixin):
                 [TimeSignature(0, *TIME_SIGNATURE)]
             )
             new_tpq = self.config.max_num_pos_per_beat
+
+        if micro_resample:
+            self.must_resample = new_tpq
+            new_tpq = score.ticks_per_quarter // self.config.max_microtime_depth
+        else:
+            self.must_resample = None
 
         # Resample time if needed (not inplace) and attribute preprocessed time sig.
         if score.ticks_per_quarter != new_tpq:
@@ -1084,12 +1095,24 @@ class MusicTokenizer(ABC, HFHubMixin):
             ticks_per_beat = None
 
         # Adds track tokens
+        if self.high_res_score is not None:
+            all_events_high_res = all_events.copy()
+        else: 
+            all_events_high_res = None
+
         for ti, track in enumerate(score.tracks):
             track_events = self._create_track_events(track, ticks_per_beat)
+            if self.high_res_score is not None:
+                high_res_track = self.high_res_score.tracks[ti]
+                track_events_high_res = self._create_track_events(track, ticks_per_beat)
             if self.one_token_stream:
                 all_events += track_events
+                if all_events_high_res is not None:
+                    all_events_high_res += track_events_high_res
             else:
                 all_events[ti] += track_events
+                if all_events_high_res is not None:
+                    all_events_high_res[ti] += track_events_high_res
                 if self.config.program_changes:
                     # ProgramNoteOff desc to make sure it appears before Pedals and
                     # everything else
@@ -1103,24 +1126,38 @@ class MusicTokenizer(ABC, HFHubMixin):
                     all_events[ti].insert(
                         idx, Event("Program", program, 0, desc="ProgramNoteOff")
                     )
+                    if all_events_high_res is not None:
+                        all_events_high_res[ti].insert(
+                            idx, Event("Program", program, 0, desc="ProgramNoteOff")
+                        )
                 self._sort_events(all_events[ti])
+                if all_events_high_res is not None:
+                    self._sort_events(all_events_high_res[ti])
         if self.one_token_stream:
             self._sort_events(all_events)
+            if all_events_high_res is not None:
+                self._sort_events(all_events_high_res)
             # Add ProgramChange (named Program) tokens if requested.
             if self.config.program_changes:
                 self._insert_program_change_events(all_events)
+                if all_events_high_res is not None:
+                    self._insert_program_change_events(all_events_high_res)
 
         # Add time events
         if self.one_token_stream:
+            self.high_res_events = all_events_high_res
             all_events = self._add_time_events(all_events, score.ticks_per_quarter)
+            self.high_res_events = None
             tok_sequence = TokSequence(events=all_events)
             self.complete_sequence(tok_sequence)
         else:
             tok_sequence = []
             for i in range(len(all_events)):
+                self.high_res_events = all_events_high_res[i]
                 all_events[i] = self._add_time_events(
                     all_events[i], score.ticks_per_quarter
                 )
+                self.high_res_events = None
                 tok_sequence.append(TokSequence(events=all_events[i]))
                 self.complete_sequence(tok_sequence[-1])
 
@@ -1490,9 +1527,15 @@ class MusicTokenizer(ABC, HFHubMixin):
         if not isinstance(score, ScoreTick):
             score = Score(score)
 
+        if self.config.use_microtiming:
+            self.high_res_score = self.preprocess_score(score, micro_resample=True)
+
         # Preprocess the music file
         if not no_preprocess_score:
-            score = self.preprocess_score(score)
+            if self.must_resample is not None:
+                score = score.resample(self.must_resample)
+            else:
+                score = self.preprocess_score(score)
 
         # Tokenize it
         tokens = self._score_to_tokens(score)
