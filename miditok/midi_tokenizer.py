@@ -1052,7 +1052,6 @@ class MusicTokenizer(ABC, HFHubMixin):
             or (self.config.use_sustain_pedals and self.config.sustain_pedal_duration)
             or self.config.use_chords
             or self.config.use_pitch_intervals
-            or self.config.use_microtiming
         ):
             if self.config.use_time_signatures:
                 ticks_per_beat = get_score_ticks_per_beat(score)

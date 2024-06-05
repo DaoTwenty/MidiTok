@@ -27,6 +27,7 @@ SEED = 777
 
 HERE = Path(__file__).parent
 MIDI_PATHS_ONE_TRACK = sorted((HERE / "MIDIs_one_track").rglob("*.mid"))
+MIDI_PATHS_ONE_TRACK_SHORT = sorted((HERE / "MIDIs_one_track").rglob("short_*.mid"))
 MIDI_PATHS_MULTITRACK = sorted((HERE / "MIDIs_multitrack").rglob("*.mid"))
 MIDI_PATHS_CORRUPTED = sorted((HERE / "MIDIs_corrupted").rglob("*.mid"))
 MIDI_PATHS_ALL = sorted(
@@ -409,6 +410,55 @@ def tokenize_and_check_equals(
         print(f"{log_prefix} Validation of tokens types / values successions failed")
 
     return score_decoded, score, not scores_equals
+
+def tokenize_and_check_equals_return_all(
+    score: Score,
+    tokenizer: miditok.MusicTokenizer
+) -> tuple[Score, Score, bool]:
+    tokenization = type(tokenizer).__name__
+    log_prefix = f"short micro / {tokenization}"
+
+    # Tokenize and detokenize
+    adapt_ref_score_before_tokenize(score, tokenizer)
+    tokens = tokenizer(score)
+    score_decoded = tokenizer(
+        tokens,
+        miditok.utils.get_score_programs(score) if len(score.tracks) > 0 else None,
+    )
+
+
+    # Post-process the reference and decoded Scores
+    # We might need to resample the original preprocessed Score, as it has been
+    # resampled with its highest ticks/beat whereas the tokens has been decoded with
+    # the tokenizer's time division, which can be different if using time signatures.
+    score_unres = copy(score)
+    score = adapt_ref_score_for_tests_assertion(score, tokenizer)
+    if score.ticks_per_quarter != score_decoded.ticks_per_quarter:
+        score = score.resample(tpq=score_decoded.ticks_per_quarter)
+    sort_score(score)
+    sort_score(score)
+    sort_score(score_decoded)
+
+    # Check decoded Score is identical to the reference one
+    scores_equals = check_scores_equals(
+        score,
+        score_decoded,
+        check_tempos=tokenizer.config.use_tempos and tokenization != "MuMIDI",
+        check_time_signatures=tokenizer.config.use_time_signatures,
+        check_pedals=tokenizer.config.use_sustain_pedals,
+        check_pitch_bends=tokenizer.config.use_pitch_bends,
+        log_prefix=log_prefix,
+    )
+
+    # Checks types and values conformity following the rules
+    err_tse = tokenizer.tokens_errors(tokens)
+    if isinstance(err_tse, list):
+        err_tse = sum(err_tse)
+    if err_tse != 0.0:
+        scores_equals = False
+        print(f"{log_prefix} Validation of tokens types / values successions failed")
+
+    return tokens, score_decoded, score, score_unres, not scores_equals, err_tse
 
 
 def del_invalid_time_sig(
