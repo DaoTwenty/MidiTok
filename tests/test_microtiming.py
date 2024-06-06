@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os, sys
-from copy import deepcopy
+from copy import deepcopy, copy
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +25,9 @@ from utils_tests import (
     adjust_tok_params_for_tests,
     tokenize_and_check_equals,
     tokenize_and_check_equals_return_all,
+    adapt_ref_score_before_tokenize,
+    adapt_ref_score_for_tests_assertion,
+    sort_score
 )
 
 ALL_TOKENIZATIONS = ["MIREX"]
@@ -220,6 +223,37 @@ def _test_tokenize(
         score, tokenizer
     )
 
+def _test_encode(
+    score,
+    tok_params_set: tuple[str, dict[str, Any]],
+    saving_erroneous_files: bool = False,
+    save_failed_file_as_one_file: bool = True,
+):
+
+    # Creates the tokenizer
+    tokenization, params = tok_params_set
+    tokenizer: miditok.MusicTokenizer = getattr(miditok, tokenization)(
+        tokenizer_config=miditok.TokenizerConfig(**params)
+    )
+    str(tokenizer)  # shouldn't fail
+
+    adapt_ref_score_before_tokenize(score, tokenizer)
+    tokens = tokenizer(score)
+    score_decoded = tokenizer(
+        tokens,
+        miditok.utils.get_score_programs(score) if len(score.tracks) > 0 else None,
+    )
+
+    score_unres = copy(score)
+    score = adapt_ref_score_for_tests_assertion(score, tokenizer)
+    if score.ticks_per_quarter != score_decoded.ticks_per_quarter:
+        score = score.resample(tpq=score_decoded.ticks_per_quarter)
+    sort_score(score)
+    sort_score(score)
+    sort_score(score_decoded)
+
+    return tokens, score_decoded, score, score_unres
+
 
 def _id_tok(tok_params_set: tuple[str, dict]) -> str:
     """
@@ -274,7 +308,8 @@ if __name__ == "__main__":
     print(TOK_PARAMS_ONE_TRACK[0])
 
     score = Score(Path(MIDI_PATHS_ONE_TRACK_SHORT[0]))
-    tokseq, score_decoded, score_ref, score_unres, has_errors, errs = _test_tokenize(score, TOK_PARAMS_ONE_TRACK[0], False)
+    tokseq, score_decoded, score_ref, score_unres, has_err, errs = _test_tokenize(score, TOK_PARAMS_ONE_TRACK[0], False)
+    tokseq, score_decoded, score_ref, score_unres = _test_encode(score, TOK_PARAMS_ONE_TRACK[0], False)
     print(tokseq)
     print("Original")
     print(score.tpq)
@@ -287,5 +322,3 @@ if __name__ == "__main__":
     print(score_ref.tracks[0].notes)
     print("Decoded")
     print(score_decoded.tracks[0].notes)
-    print("Errors: ", has_errors)
-    print(errs)

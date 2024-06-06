@@ -1528,14 +1528,18 @@ class MusicTokenizer(ABC, HFHubMixin):
             score = Score(score)
 
         if self.config.use_microtiming:
-            self.high_res_score = self.preprocess_score(score, micro_resample=True)
+            #self.high_res_score = self.preprocess_score(score, micro_resample=True)
+            self.high_res_score = score.resample(score.ticks_per_quarter // self.config.max_microtime_depth)
 
         # Preprocess the music file
         if not no_preprocess_score:
+            score = self.preprocess_score(score)
+            '''
             if self.must_resample is not None:
                 score = score.resample(self.must_resample)
             else:
                 score = self.preprocess_score(score)
+            '''
 
         # Tokenize it
         tokens = self._score_to_tokens(score)
