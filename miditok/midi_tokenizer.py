@@ -178,7 +178,6 @@ class MusicTokenizer(ABC, HFHubMixin):
         # ticks per beat).
         # Related: https://github.com/Yikai-Liao/symusic/issues/10
         self.time_division = self._tpb_per_ts[TIME_SIGNATURE[1]]
-
         # Durations
         # Usages:
         # Duration: tpb --> np.array (ticks) to get the closest;
@@ -213,9 +212,12 @@ class MusicTokenizer(ABC, HFHubMixin):
             self.max_ticks_per_beat = compute_ticks_per_bar(max_ts_denominator, self.time_division)
             self.max_ticks_per_pos = self.max_ticks_per_beat // self.config.max_num_pos_per_beat
             self.microtime_max_res = int(np.floor(np.emath.logn(base, self.max_ticks_per_pos // max_depth)))
+            self.microtime_min_res = 1
             self.microtimes = np.arange(
                 0, base * self.microtime_max_res,  dtype=np.intc
             )
+
+        self.high_res_score = None
 
         self._first_beat_res = next(iter(self.config.beat_res.values()))
         for beat_range, res in self.config.beat_res.items():
@@ -252,6 +254,26 @@ class MusicTokenizer(ABC, HFHubMixin):
 
         # For logging
         self._verbose = False
+
+    def init_high_resolution(self, score: Score) -> Score:
+
+        self.high_res_score = score.resample(score.ticks_per_quarter // self.config.max_microtime_depth)
+
+        self.high_res = {}
+        self.high_res["time_signatures"] = [TIME_SIGNATURE]
+        if self.config.use_time_signatures:
+            self.high_res["time_signatures"] = self.__create_time_signatures(high_res = True)
+        self.high_res["_tpb_per_ts"] = self.__create_tpb_per_ts(max_num_pos_per_beat = self.high_res_score.tpq, high_res = True)
+        self.high_res["time_division"] = self.high_res["_tpb_per_ts"][TIME_SIGNATURE[1]]
+        self.high_res["durations"] = self._create_durations_tuples(config_beat_res = {(0, 4): self.high_res_score.tpq, (4, 12): self.high_res_score.tpq})
+        self.high_res["_tpb_to_time_array"] = self.__create_tpb_to_ticks_array(high_res = True)
+        self.high_res["_tpb_tokens_to_ticks"] = self.__create_tpb_tokens_to_ticks(high_res = True)
+        self.high_res["_tpb_ticks_to_tokens"] = self.__create_tpb_ticks_to_tokens(high_res = True)
+        self.high_res["rests"] = []
+        if self.config.use_rests:
+            self.high_res["rests"] = self.__create_rests(config_beat_res_rest = {(0, 4): self.high_res_score.tpq, (4, 12): self.high_res_score.tpq})
+        self.high_res["_tpb_to_rest_array"] = self.__create_tpb_to_ticks_array(rest=True, high_res=True)
+        self.high_res["_tpb_rests_to_ticks"] = self.__create_tpb_tokens_to_ticks(rest=True, high_res=True)
 
     def _tweak_config_before_creating_voc(self) -> None:
         # called after setting the tokenizer's TokenizerConfig (.config). To be
@@ -377,7 +399,6 @@ class MusicTokenizer(ABC, HFHubMixin):
     def preprocess_score(
             self, 
             score: Score,
-            micro_resample: bool = False,
         ) -> Score:
         r"""
         Pre-process a ``symusic.Score`` object to resample its time and events values.
@@ -418,11 +439,8 @@ class MusicTokenizer(ABC, HFHubMixin):
             )
             new_tpq = self.config.max_num_pos_per_beat
 
-        if micro_resample:
-            self.must_resample = new_tpq
-            new_tpq = score.ticks_per_quarter // self.config.max_microtime_depth
-        else:
-            self.must_resample = None
+            if hasattr(self, 'high_res') and self.high_res is not None:
+                self.high_res['resampling_factor'] = score.tpq / new_tpq
 
         # Resample time if needed (not inplace) and attribute preprocessed time sig.
         if score.ticks_per_quarter != new_tpq:
@@ -432,7 +450,17 @@ class MusicTokenizer(ABC, HFHubMixin):
                 time_signatures_soa["time"] * (new_tpq / score.ticks_per_quarter)
             ).astype(np.int32)
 
+            idx = [i for i in range(len(score.tracks[0].notes))]
+            unres = score.copy()
             score = score.resample(new_tpq, min_dur=1)
+            for i in idx:
+                print(unres.tracks[0].notes[i].time)
+                print(score.tracks[0].notes[i].time * unres.tpq / new_tpq)
+                print(round(unres.tracks[0].notes[i].time * new_tpq / unres.tpq))
+                #assert round(score.tracks[0].notes[i].time * unres.tpq / new_tpq) == unres.tracks[0].notes[i].time
+                print(score.tracks[0].notes[i].time)
+                print(unres.tracks[0].notes[i].time * new_tpq / unres.tpq)
+                print('------')
             score.time_signatures = TimeSignatureTickList.from_numpy(
                 time_signatures_soa["time"],
                 time_signatures_soa["numerator"],
@@ -1091,12 +1119,15 @@ class MusicTokenizer(ABC, HFHubMixin):
                 ticks_per_beat = get_score_ticks_per_beat(score)
             else:
                 ticks_per_beat = np.array([[score.end(), self.time_division]])
+            if self.high_res_score is not None:
+                high_res_ticks_per_beat = np.array([[self.high_res_score.end(), self.high_res["time_division"]]])
         else:
             ticks_per_beat = None
+            high_res_ticks_per_beat = None
 
         # Adds track tokens
         if self.high_res_score is not None:
-            all_events_high_res = all_events.copy()
+            all_events_high_res = deepcopy(all_events)
         else: 
             all_events_high_res = None
 
@@ -1104,7 +1135,7 @@ class MusicTokenizer(ABC, HFHubMixin):
             track_events = self._create_track_events(track, ticks_per_beat)
             if self.high_res_score is not None:
                 high_res_track = self.high_res_score.tracks[ti]
-                track_events_high_res = self._create_track_events(track, ticks_per_beat)
+                track_events_high_res = self._create_track_events(high_res_track, high_res_ticks_per_beat, high_res = True)
             if self.one_token_stream:
                 all_events += track_events
                 if all_events_high_res is not None:
@@ -1168,7 +1199,7 @@ class MusicTokenizer(ABC, HFHubMixin):
         events.sort(key=lambda e: e.time)
 
     def _create_track_events(
-        self, track: Track, ticks_per_beat: np.ndarray = None
+        self, track: Track, ticks_per_beat: np.ndarray = None, high_res = False
     ) -> list[Event]:
         r"""
         Extract the tokens/events from a track (``symusic.Track``).
@@ -1189,6 +1220,9 @@ class MusicTokenizer(ABC, HFHubMixin):
             *PitchInterval* or *Chord* tokens. (default: ``None``)
         :return: sequence of corresponding ``Event``s.
         """
+        if high_res:
+            assert self.high_res_score is not None
+
         if self.config.use_programs:
             program = track.program if not track.is_drum else -1
         else:
@@ -1197,9 +1231,14 @@ class MusicTokenizer(ABC, HFHubMixin):
         # max_time_interval is adjusted depending on the time signature denom / tpb
         max_time_interval = 0
         if self.config.use_pitch_intervals:
-            max_time_interval = (
-                ticks_per_beat[0, 1] * self.config.pitch_intervals_max_time_dist
-            )
+            if not high_res:
+                max_time_interval = (
+                    ticks_per_beat[0, 1] * self.config.pitch_intervals_max_time_dist
+                )
+            else:
+                max_time_interval = (
+                    self.high_res_score.end()
+                )
         previous_note_onset = -max_time_interval - 1
         previous_pitch_onset = -128  # lowest at a given time
         previous_pitch_chord = -128  # for chord intervals
@@ -1222,9 +1261,14 @@ class MusicTokenizer(ABC, HFHubMixin):
                     # `while` here as there might not be any note in the next section
                     while pedal.time >= ticks_per_beat[tpb_idx, 0]:
                         tpb_idx += 1
-                    dur = self._tpb_ticks_to_tokens[ticks_per_beat[tpb_idx, 1]][
-                        pedal.duration
-                    ]
+                    if high_res:
+                        dur = self.high_res["_tpb_ticks_to_tokens"][ticks_per_beat[tpb_idx, 1]][
+                            pedal.duration
+                        ]
+                    else:
+                        dur = self._tpb_ticks_to_tokens[ticks_per_beat[tpb_idx, 1]][
+                            pedal.duration
+                        ]
                     events.append(
                         Event(
                             "Duration",
@@ -1264,7 +1308,7 @@ class MusicTokenizer(ABC, HFHubMixin):
                 chord_maps=self.config.chord_maps,
                 program=program,
                 specify_root_note=self.config.chord_tokens_with_root_note,
-                beat_res=self._first_beat_res,
+                beat_res=self.high_res_score.tpq if high_res else self._first_beat_res,
                 unknown_chords_num_notes_range=self.config.chord_unknown,
             )
             for chord in chords:
@@ -1392,9 +1436,14 @@ class MusicTokenizer(ABC, HFHubMixin):
                 # `while` as there might not be any note in the next section
                 while note.time >= ticks_per_beat[tpb_idx, 0]:
                     tpb_idx += 1
-                dur = self._tpb_ticks_to_tokens[ticks_per_beat[tpb_idx, 1]][
-                    note.duration
-                ]
+                if high_res:
+                    dur = self.high_res["_tpb_ticks_to_tokens"][ticks_per_beat[tpb_idx, 1]][
+                        note.duration
+                    ]
+                else:
+                    dur = self._tpb_ticks_to_tokens[ticks_per_beat[tpb_idx, 1]][
+                        note.duration
+                    ]
                 events.append(
                     Event(
                         type_="Duration",
@@ -1527,19 +1576,13 @@ class MusicTokenizer(ABC, HFHubMixin):
         if not isinstance(score, ScoreTick):
             score = Score(score)
 
-        if self.config.use_microtiming:
-            #self.high_res_score = self.preprocess_score(score, micro_resample=True)
-            self.high_res_score = score.resample(score.ticks_per_quarter // self.config.max_microtime_depth)
-
         # Preprocess the music file
         if not no_preprocess_score:
+            if self.config.use_microtiming:
+                #self.high_res_score = self.preprocess_score(score, micro_resample=True)
+                #self.high_res_score = score.resample(score.ticks_per_quarter // self.config.max_microtime_depth)
+                self.init_high_resolution(score)
             score = self.preprocess_score(score)
-            '''
-            if self.must_resample is not None:
-                score = score.resample(self.must_resample)
-            else:
-                score = self.preprocess_score(score)
-            '''
 
         # Tokenize it
         tokens = self._score_to_tokens(score)
@@ -1576,7 +1619,6 @@ class MusicTokenizer(ABC, HFHubMixin):
                 seq.tokens = self._bytes_to_tokens(seq.bytes)
         if len(seq.ids) == 0:
             seq.ids = self._tokens_to_ids(seq.tokens)
-
         if complete_bytes and self.is_trained and len(seq.bytes) == 0:
             seq.bytes = self._ids_to_bytes(seq.ids, as_one_str=True)
 
@@ -2176,7 +2218,7 @@ class MusicTokenizer(ABC, HFHubMixin):
                 for token_type in original_token_types:
                     self.tokens_types_graph[token_type].add(special_token_type)
 
-    def _create_durations_tuples(self) -> list[tuple[int, int, int]]:
+    def _create_durations_tuples(self, config_beat_res = None) -> list[tuple[int, int, int]]:
         r"""
         Create the possible durations in beat / position units as tuples of intergers.
 
@@ -2193,8 +2235,10 @@ class MusicTokenizer(ABC, HFHubMixin):
 
         :return: the duration bins.
         """
+        if config_beat_res is None:
+            config_beat_res = self.config.beat_res
         durations = []
-        for beat_range, beat_res in self.config.beat_res.items():
+        for beat_range, beat_res in config_beat_res.items():
             durations += [
                 (beat, pos, beat_res)
                 for beat in range(*beat_range)
@@ -2202,15 +2246,15 @@ class MusicTokenizer(ABC, HFHubMixin):
             ]
         durations += [
             (
-                max(max(self.config.beat_res)),
+                max(max(config_beat_res)),
                 0,
-                self.config.beat_res[max(self.config.beat_res)],
+                config_beat_res[max(config_beat_res)],
             )
         ]  # the last one
         del durations[0]  # removes duration of 0
         return durations
 
-    def __create_tpb_per_ts(self) -> dict[int, int]:
+    def __create_tpb_per_ts(self, max_num_pos_per_beat = None, high_res: bool = False) -> dict[int, int]:
         """
         Return the dictionary of the possible ticks per beat values per time signature.
 
@@ -2221,9 +2265,15 @@ class MusicTokenizer(ABC, HFHubMixin):
         :return: dictionary of the possible ticks per beat values per time signature,
             keys are time signature denominators, values the ticks/beat values.
         """
-        max_denom = max(ts[1] for ts in self.time_signatures)
+        if high_res:
+            ts = self.high_res["time_signatures"]
+        else:
+            ts = self.time_signatures
+        max_denom = max(t[1] for t in ts)
+        if max_num_pos_per_beat is None:
+            max_num_pos_per_beat = self.config.max_num_pos_per_beat
         return {
-            denom: self.config.max_num_pos_per_beat * (max_denom // denom)
+            denom: max_num_pos_per_beat * (max_denom // denom)
             for denom in self.config.time_signature_range
         }
 
@@ -2288,7 +2338,7 @@ class MusicTokenizer(ABC, HFHubMixin):
 
         return factors_idx
 
-    def __create_tpb_to_ticks_array(self, rest: bool = False) -> dict[int, np.ndarray]:
+    def __create_tpb_to_ticks_array(self, rest: bool = False, high_res: bool = False) -> dict[int, np.ndarray]:
         r"""
         Create arrays of the times in ticks of the time tokens of the vocabulary.
 
@@ -2302,17 +2352,22 @@ class MusicTokenizer(ABC, HFHubMixin):
         :return: dictionary of the durations in tick depending on the ticks per beat
             resolution.
         """
-        values = self.rests if rest else self.durations
+        if high_res:
+            _tpb_per_ts = self.high_res["_tpb_per_ts"]
+            values = self.high_res["rests"] if rest else self.high_res["durations"]
+        else:
+            _tpb_per_ts = self._tpb_per_ts
+            values = self.rests if rest else self.durations
         return {
             tpb: np.array(
                 [self._time_token_to_ticks(time_tuple, tpb) for time_tuple in values],
                 dtype=np.intc,
             )
-            for tpb in self._tpb_per_ts.values()
+            for tpb in _tpb_per_ts.values()
         }
 
     def __create_tpb_tokens_to_ticks(
-        self, rest: bool = False
+        self, rest: bool = False, high_res: bool = False
     ) -> dict[int, dict[str, int]]:
         r"""
         Create the correspondences between times in tick and token value (str).
@@ -2327,7 +2382,12 @@ class MusicTokenizer(ABC, HFHubMixin):
             (default: ``False``)
         :return: ticks per beat + token value to duration in tick.
         """
-        values = self.rests if rest else self.durations
+        if high_res:
+            _tpb_per_ts = self.high_res["_tpb_per_ts"]
+            values = self.high_res["rests"] if rest else self.high_res["durations"]
+        else:
+            _tpb_per_ts = self._tpb_per_ts
+            values = self.rests if rest else self.durations
         return {
             tpb: {
                 ".".join(map(str, duration_tuple)): self._time_token_to_ticks(
@@ -2335,10 +2395,10 @@ class MusicTokenizer(ABC, HFHubMixin):
                 )
                 for duration_tuple in values
             }
-            for tpb in self._tpb_per_ts.values()
+            for tpb in _tpb_per_ts.values()
         }
 
-    def __create_tpb_ticks_to_tokens(self) -> dict[int, dict[int, str]]:
+    def __create_tpb_ticks_to_tokens(self, high_res: bool = False) -> dict[int, dict[int, str]]:
         r"""
         Create the correspondences between times in tick and token value (str).
 
@@ -2351,9 +2411,13 @@ class MusicTokenizer(ABC, HFHubMixin):
 
         :return: ticks per beat + duration in ticks to token value.
         """
+        if high_res:
+            _tpb_tokens_to_ticks = self.high_res["_tpb_tokens_to_ticks"]
+        else:
+            _tpb_tokens_to_ticks = self._tpb_tokens_to_ticks
         return {
             tpb: {v: k for k, v in tokens_to_ticks.items()}
-            for tpb, tokens_to_ticks in self._tpb_tokens_to_ticks.items()
+            for tpb, tokens_to_ticks in _tpb_tokens_to_ticks.items()
         }
 
     @staticmethod
@@ -2419,7 +2483,7 @@ class MusicTokenizer(ABC, HFHubMixin):
 
         return values, offset_times
 
-    def __create_rests(self) -> list[tuple[int, int, int]]:
+    def __create_rests(self, config_beat_res_rest = None) -> list[tuple[int, int, int]]:
         r"""
         Create the rests of the vocabulary as tuples of integers.
 
@@ -2430,8 +2494,10 @@ class MusicTokenizer(ABC, HFHubMixin):
 
         :return: the rests.
         """
+        if config_beat_res_rest is None:
+            config_beat_res_rest = self.config.beat_res_rest
         rests = []
-        for beat_range, beat_res in self.config.beat_res_rest.items():
+        for beat_range, beat_res in config_beat_res_rest.items():
             rests += [
                 (beat, pos, beat_res)
                 for beat in range(*beat_range)
@@ -2439,9 +2505,9 @@ class MusicTokenizer(ABC, HFHubMixin):
             ]
         rests += [
             (
-                max(max(self.config.beat_res_rest)),
+                max(max(config_beat_res_rest)),
                 0,
-                self.config.beat_res_rest[max(self.config.beat_res_rest)],
+                config_beat_res_rest[max(config_beat_res_rest)],
             )
         ]  # the last one
         del rests[0]  # removes rests of 0

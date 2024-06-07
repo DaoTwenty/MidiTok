@@ -234,7 +234,11 @@ class MIREX(MusicTokenizer):
 
                     if self.config.use_microtiming:
                         high_res_event = self.high_res_events[i]
-                        microtimes = self._get_micro_times(high_res_event.time - tick_at_current_bar, ticks_per_pos, pos_index)
+                        print(high_res_event.time)
+                        print(event.time)
+                        delta = high_res_event.time - round(self.high_res['resampling_factor'] * event.time)
+                        microtimes = self._get_micro_times(delta)
+                        print(delta, microtimes)
                         for m in microtimes:
                             all_events.append(
                                 Event(
@@ -290,9 +294,7 @@ class MIREX(MusicTokenizer):
     
     def _get_micro_times(
             self,
-            event_ticks_in_bar: int, 
-            ticks_per_pos: int, 
-            event_pos_index: int,
+            delta_ticks: int, 
     ) -> list[int]:
         r"""
         Compute values of microtime tokens for position event according
@@ -302,16 +304,13 @@ class MIREX(MusicTokenizer):
         converts this value into the number base representation, capped by
         the max depth.
 
-        :param event_ticks_in_bar: the time position of the event within the bar.
-        :param ticks_per_pos: number of ticks per bar.
-        :param event_pos_index: the index of the position token
+        :param event_ticks_in_bar: difference in tcks between high and low resolution score (adjusted for tpq difference)
 
         :return: the microtiming token values for each microtime depth token.
         """
         base = self.config.microtime_base
-        delta_ticks = event_ticks_in_bar - ticks_per_pos * event_pos_index
         microtimes = []
-        for i in range(self.microtime_max_res, self.microtime_min_res, -1):
+        for i in range(self.microtime_max_res, self.microtime_min_res - 1, -1):
             resolution = base ** i
             res_factor = delta_ticks // resolution
             delta_ticks = delta_ticks % resolution

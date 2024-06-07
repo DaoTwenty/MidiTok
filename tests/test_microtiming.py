@@ -63,6 +63,8 @@ for tokenization_ in ALL_TOKENIZATIONS:
             "use_pitch_bends": False,
             "use_pitch_intervals": False,
             "remove_duplicated_notes": True,
+            "use_microtiming": True,
+            "one_token_stream": True,
         }
     )
     if tokenization_ == "MMM":
@@ -151,6 +153,7 @@ default_params.update(
         "sustain_pedal_duration": False,
         "one_token_stream_for_programs": True,
         "program_changes": False,
+        "one_token_stream": True,
     }
 )
 TOK_PARAMS_MULTITRACK = []
@@ -251,8 +254,9 @@ def _test_encode(
     sort_score(score)
     sort_score(score)
     sort_score(score_decoded)
+    sort_score(tokenizer.high_res_score)
 
-    return tokens, score_decoded, score, score_unres
+    return tokens, score_decoded, score, tokenizer.high_res_score
 
 
 def _id_tok(tok_params_set: tuple[str, dict]) -> str:
@@ -308,16 +312,17 @@ if __name__ == "__main__":
     print(TOK_PARAMS_ONE_TRACK[0])
 
     score = Score(Path(MIDI_PATHS_ONE_TRACK_SHORT[0]))
-    tokseq, score_decoded, score_ref, score_unres, has_err, errs = _test_tokenize(score, TOK_PARAMS_ONE_TRACK[0], False)
-    tokseq, score_decoded, score_ref, score_unres = _test_encode(score, TOK_PARAMS_ONE_TRACK[0], False)
+    #tokseq, score_decoded, score_ref, score_unres, has_err, errs = _test_tokenize(score, TOK_PARAMS_ONE_TRACK[0], False)
+    tokseq, score_decoded, score_ref, score_micro_res = _test_encode(score, TOK_PARAMS_ONE_TRACK[0], False)
+    print('---------------------------Token Sequence---------------------------')
     print(tokseq)
     print("Original")
     print(score.tpq)
     print(score.tracks[0].notes)
-    print("Original Ref Unres")
-    print(score_unres.tpq)
-    print(score_unres.tracks[0].notes)
-    print("Original Ref")
+    print("Original Resampled for microtiming")
+    print(score_micro_res.tpq)
+    print(score_micro_res.tracks[0].notes)
+    print("Original Resampled for comparison")
     print(score_ref.tpq)
     print(score_ref.tracks[0].notes)
     print("Decoded")
