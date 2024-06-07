@@ -133,7 +133,7 @@ class MIREX(MusicTokenizer):
                     ticks_per_pos = ticks_per_beat // self.config.max_num_pos_per_beat
                     break
         # Add the time events
-        for i, event in enumerate(events):
+        for event_idx, event in enumerate(events):
             if event.time != previous_tick:
                 # (Rest)
                 if (
@@ -233,12 +233,9 @@ class MIREX(MusicTokenizer):
                     )
 
                     if self.config.use_microtiming:
-                        high_res_event = self.high_res_events[i]
-                        print(high_res_event.time)
-                        print(event.time)
+                        high_res_event = self.high_res_events[event_idx]
                         delta = high_res_event.time - round(self.high_res['resampling_factor'] * event.time)
                         microtimes = self._get_micro_times(delta)
-                        print(delta, microtimes)
                         for m in microtimes:
                             all_events.append(
                                 Event(
@@ -304,19 +301,28 @@ class MIREX(MusicTokenizer):
         converts this value into the number base representation, capped by
         the max depth.
 
-        :param event_ticks_in_bar: difference in tcks between high and low resolution score (adjusted for tpq difference)
+        :param event_ticks_in_bar: difference in ticks between high and low resolution events (adjusted for tpq difference)
 
         :return: the microtiming token values for each microtime depth token.
         """
         base = self.config.microtime_base
         microtimes = []
-        for i in range(self.microtime_max_res, self.microtime_min_res - 1, -1):
+        # if negative difference Delta_0 is added
+        if delta_ticks < 0:
+            microtimes.append(0)
+            delta_ticks = -delta_ticks
+        delta = delta_ticks
+        for i in range(self.microtime_max_res - 1, self.microtime_min_res - 1, -1):
             resolution = base ** i
-            res_factor = delta_ticks // resolution
+            res_factor =  delta_ticks // resolution
+            if res_factor >= base:
+                # having base factor more than base means that delta > max_resolution
+                raise ValueError(f"Microtiming resolution failed to capture full time delta. Recieved Delta value {delta} with max resolution {base ** self.microtime_max_res}")
             delta_ticks = delta_ticks % resolution
-            idx = self.microtime_max_res - i
-            microtimes.append(int(base * idx + res_factor))
-            
+            idx = self.microtime_max_res - 1 - i
+            if res_factor != 0:
+                microtimes.append(int(base * idx + res_factor))
+        
         return microtimes
 
     def _tokens_to_score(
@@ -341,7 +347,10 @@ class MIREX(MusicTokenizer):
             tokens = [tokens]
         for i in range(len(tokens)):
             tokens[i] = tokens[i].tokens
-        score = Score(self.time_division)
+        if self.config.use_microtiming:
+            score = Score(self.high_res["time_division"])
+        else:
+            score = Score(self.time_division)
 
         # RESULTS
         tracks: dict[int, Track] = {}
@@ -387,8 +396,15 @@ class MIREX(MusicTokenizer):
             ticks_per_bar = compute_ticks_per_bar(
                 current_time_sig, score.ticks_per_quarter
             )
+            high_res_ticks_per_beat = self.high_res["_tpb_per_ts"][current_time_sig.denominator]
+            high_res_ticks_per_pos = 1
             ticks_per_beat = self._tpb_per_ts[current_time_sig.denominator]
             ticks_per_pos = ticks_per_beat // self.config.max_num_pos_per_beat
+
+            if self.config.use_microtiming:
+                tick_factor = int(self.high_res["resampling_factor"])
+            else:
+                tick_factor = 1
 
             # Set tracking variables
             current_tick = tick_at_last_ts_change = tick_at_current_bar = 0
@@ -414,6 +430,7 @@ class MIREX(MusicTokenizer):
                 )
 
             # Decode tokens
+            previous_token = None
             for ti, token in enumerate(seq):
                 tok_type, tok_val = token.split("_")
                 if token == "Bar_None":
@@ -441,12 +458,21 @@ class MIREX(MusicTokenizer):
                     if current_bar == -1:
                         # as this Position token occurs before any Bar token
                         current_bar = 0
-                    current_tick = tick_at_current_bar + int(tok_val) * ticks_per_pos
+                    current_tick = tick_at_current_bar + tick_factor * int(tok_val) * ticks_per_pos
                 elif tok_type == "Delta":
-                    res_factor = self.microtime_max_res - ( int(tok_val) // self.config.microtime_base )
-                    res_value = int(tok_val) % self.config.microtime_base
-                    added_microtime_ticks = res_value * ( self.config.microtime_base ** res_factor )
-                    current_tick = current_tick + added_microtime_ticks
+                    # Check if first delta token is Delta_0 (negative delta time)
+                    if not previous_token.split("_")[0] == "Delta":
+                        if int(tok_val) == 0:
+                            sign_factor = -1
+                            continue
+                        else:
+                            sign_factor = 1
+                    
+                    if not int(tok_val) == 0:
+                        res_factor = self.microtime_max_res - ( int(tok_val) // self.config.microtime_base ) - 1
+                        res_value = int(tok_val) % self.config.microtime_base
+                        added_microtime_ticks = res_value * ( self.config.microtime_base ** res_factor )
+                        current_tick = current_tick + sign_factor * added_microtime_ticks
                 elif tok_type in {
                     "Pitch",
                     "PitchDrum",
@@ -476,7 +502,13 @@ class MIREX(MusicTokenizer):
                         vel_type, vel = seq[ti + 1].split("_")
                         dur_type, dur = seq[ti + 2].split("_")
                         if vel_type == "Velocity" and dur_type == "Duration":
-                            dur = self._tpb_tokens_to_ticks[ticks_per_beat][dur]
+                            '''
+                            if self.config.use_microtiming:
+                                dur = self.high_res["_tpb_tokens_to_ticks"][ticks_per_beat][dur]
+                            else:
+                                dur = self._tpb_tokens_to_ticks[ticks_per_beat][dur]
+                            '''
+                            dur = tick_factor * self._tpb_tokens_to_ticks[ticks_per_beat][dur]
                             new_note = Note(
                                 current_tick,
                                 dur,
@@ -522,17 +554,21 @@ class MIREX(MusicTokenizer):
                         ticks_per_bar = compute_ticks_per_bar(
                             current_time_sig, score.ticks_per_quarter
                         )
-                        ticks_per_beat = self._tpb_per_ts[den]
-                        ticks_per_pos = (
-                            ticks_per_beat // self.config.max_num_pos_per_beat
-                        )
+                        if self.config.use_microtiming:
+                            ticks_per_beat = self.high_res["_tpb_per_ts"][den]
+                            ticks_per_pos = 1
+                        else:
+                            ticks_per_beat = self._tpb_per_ts[den]
+                            ticks_per_pos = (
+                                ticks_per_beat // self.config.max_num_pos_per_beat
+                            )
                 elif tok_type == "Pedal":
                     pedal_prog = (
                         int(tok_val) if self.config.use_programs else current_program
                     )
                     if self.config.sustain_pedal_duration and ti + 1 < len(seq):
                         if seq[ti + 1].split("_")[0] == "Duration":
-                            duration = self._tpb_tokens_to_ticks[ticks_per_beat][
+                            duration = tick_factor * self._tpb_tokens_to_ticks[ticks_per_beat][
                                 seq[ti + 1].split("_")[1]
                             ]
                             # Add instrument if it doesn't exist, can happen for the
@@ -567,6 +603,7 @@ class MIREX(MusicTokenizer):
                         tracks[current_program].pitch_bends.append(new_pitch_bend)
                     else:
                         current_track.pitch_bends.append(new_pitch_bend)
+                previous_token = token
 
             # Add current_inst to score and handle notes still active
             if not self.one_token_stream and not is_track_empty(current_track):

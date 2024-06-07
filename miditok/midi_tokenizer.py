@@ -211,10 +211,10 @@ class MusicTokenizer(ABC, HFHubMixin):
             max_ts_denominator = max(self.config.time_signature_range.keys())
             self.max_ticks_per_beat = compute_ticks_per_bar(max_ts_denominator, self.time_division)
             self.max_ticks_per_pos = self.max_ticks_per_beat // self.config.max_num_pos_per_beat
-            self.microtime_max_res = int(np.floor(np.emath.logn(base, self.max_ticks_per_pos // max_depth)))
-            self.microtime_min_res = 1
+            self.microtime_max_res = int(np.ceil(np.emath.logn(base, self.max_ticks_per_pos // max_depth))) 
+            self.microtime_min_res = 0
             self.microtimes = np.arange(
-                0, base * self.microtime_max_res,  dtype=np.intc
+                0, base * (self.microtime_max_res - self.microtime_min_res),  dtype=np.intc
             )
 
         self.high_res_score = None
@@ -274,6 +274,7 @@ class MusicTokenizer(ABC, HFHubMixin):
             self.high_res["rests"] = self.__create_rests(config_beat_res_rest = {(0, 4): self.high_res_score.tpq, (4, 12): self.high_res_score.tpq})
         self.high_res["_tpb_to_rest_array"] = self.__create_tpb_to_ticks_array(rest=True, high_res=True)
         self.high_res["_tpb_rests_to_ticks"] = self.__create_tpb_tokens_to_ticks(rest=True, high_res=True)
+        print(self.high_res)
 
     def _tweak_config_before_creating_voc(self) -> None:
         # called after setting the tokenizer's TokenizerConfig (.config). To be
@@ -449,18 +450,7 @@ class MusicTokenizer(ABC, HFHubMixin):
             time_signatures_soa["time"] = (
                 time_signatures_soa["time"] * (new_tpq / score.ticks_per_quarter)
             ).astype(np.int32)
-
-            idx = [i for i in range(len(score.tracks[0].notes))]
-            unres = score.copy()
             score = score.resample(new_tpq, min_dur=1)
-            for i in idx:
-                print(unres.tracks[0].notes[i].time)
-                print(score.tracks[0].notes[i].time * unres.tpq / new_tpq)
-                print(round(unres.tracks[0].notes[i].time * new_tpq / unres.tpq))
-                #assert round(score.tracks[0].notes[i].time * unres.tpq / new_tpq) == unres.tracks[0].notes[i].time
-                print(score.tracks[0].notes[i].time)
-                print(unres.tracks[0].notes[i].time * new_tpq / unres.tpq)
-                print('------')
             score.time_signatures = TimeSignatureTickList.from_numpy(
                 time_signatures_soa["time"],
                 time_signatures_soa["numerator"],

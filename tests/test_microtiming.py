@@ -313,7 +313,7 @@ if __name__ == "__main__":
 
     score = Score(Path(MIDI_PATHS_ONE_TRACK_SHORT[0]))
     #tokseq, score_decoded, score_ref, score_unres, has_err, errs = _test_tokenize(score, TOK_PARAMS_ONE_TRACK[0], False)
-    tokseq, score_decoded, score_ref, score_micro_res = _test_encode(score, TOK_PARAMS_ONE_TRACK[0], False)
+    tokseq, score_decoded, score_ref, score_micro_res, has_errors, errors = _test_tokenize(score, TOK_PARAMS_ONE_TRACK[0], False)
     print('---------------------------Token Sequence---------------------------')
     print(tokseq)
     print("Original")
@@ -326,4 +326,7 @@ if __name__ == "__main__":
     print(score_ref.tpq)
     print(score_ref.tracks[0].notes)
     print("Decoded")
+    print(score_decoded.tpq)
     print(score_decoded.tracks[0].notes)
+    print("Errors", has_errors)
+    print(errors)
