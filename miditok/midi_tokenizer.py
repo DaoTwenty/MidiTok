@@ -274,7 +274,7 @@ class MusicTokenizer(ABC, HFHubMixin):
             self.high_res["rests"] = self.__create_rests(config_beat_res_rest = {(0, 4): self.high_res_score.tpq, (4, 12): self.high_res_score.tpq})
         self.high_res["_tpb_to_rest_array"] = self.__create_tpb_to_ticks_array(rest=True, high_res=True)
         self.high_res["_tpb_rests_to_ticks"] = self.__create_tpb_tokens_to_ticks(rest=True, high_res=True)
-        print(self.high_res)
+        #print(self.high_res)
 
     def _tweak_config_before_creating_voc(self) -> None:
         # called after setting the tokenizer's TokenizerConfig (.config). To be
@@ -3150,6 +3150,7 @@ class MusicTokenizer(ABC, HFHubMixin):
         err_time = 0  # i.e. goes back or stay in time (does not go forward)
         err_note = 0  # i.e. duplicated
         previous_type = tokens[0].split("_")[0]
+        previous_value = tokens[0].split("_")[1]
         current_pos = -1
         current_program = 0
         current_pitches = {p: [] for p in self.config.programs}
@@ -3217,9 +3218,10 @@ class MusicTokenizer(ABC, HFHubMixin):
                 # Because microtiming tokens are respresentation by base decomposition in ascending index (max_res to min_res)
                 elif event_type == "Delta":
                     previous_type_delta = previous_type
-                    previous_value_delta = tokens[ti - 1].split("_")[1]
+                    previous_value_delta = previous_value
                     while previous_type_delta == "Delta":
-                        if event_value < previous_value_delta:
+                        print(event_value, previous_value_delta)
+                        if int(event_value) < int(previous_value_delta):
                             err_time += 1
                         previous_type_delta = tokens[ti - 1].split("_")[0]
                         previous_value_delta = tokens[ti - 1].split("_")[1]
@@ -3229,7 +3231,9 @@ class MusicTokenizer(ABC, HFHubMixin):
             else:
                 err_type += 1
             previous_type = event_type
+            previous_value = event_value
 
+        print(err_type, err_time, err_note)
         return err_type + err_time + err_note
 
     def save_tokens(

@@ -330,3 +330,4 @@ if __name__ == "__main__":
     print(score_decoded.tracks[0].notes)
     print("Errors", has_errors)
     print(errors)
+    print(score_decoded.markers)

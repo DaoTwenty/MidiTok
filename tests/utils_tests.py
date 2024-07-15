@@ -385,10 +385,18 @@ def tokenize_and_check_equals(
     # resampled with its highest ticks/beat whereas the tokens has been decoded with
     # the tokenizer's time division, which can be different if using time signatures.
     score = adapt_ref_score_for_tests_assertion(score, tokenizer)
+    score_unres_full = deepcopy(score)
     if score.ticks_per_quarter != score_decoded.ticks_per_quarter:
         score = score.resample(tpq=score_decoded.ticks_per_quarter)
+    score_unres_start = deepcopy(score)
+    score_unres_start = copy_start_times(score_unres_start, score_unres_full)
     sort_score(score)
+    sort_score(score_unres_start)
     sort_score(score_decoded)
+
+    # If microtiming, resample everything except start time
+    if tokenizer.config.use_microtiming:
+        score = score_unres_start
 
     # Check decoded Score is identical to the reference one
     scores_equals = check_scores_equals(
@@ -426,22 +434,23 @@ def tokenize_and_check_equals_return_all(
         miditok.utils.get_score_programs(score) if len(score.tracks) > 0 else None,
     )
 
-
     # Post-process the reference and decoded Scores
     # We might need to resample the original preprocessed Score, as it has been
     # resampled with its highest ticks/beat whereas the tokens has been decoded with
     # the tokenizer's time division, which can be different if using time signatures.
-    score_unres = copy(score)
+    score_unres_full = deepcopy(score)
     score = adapt_ref_score_for_tests_assertion(score, tokenizer)
     if score.ticks_per_quarter != score_decoded.ticks_per_quarter:
         score = score.resample(tpq=score_decoded.ticks_per_quarter)
+    score_unres_start = deepcopy(score)
+    score_unres_start = copy_start_times(score_unres_start, score_unres_full)
     sort_score(score)
-    sort_score(score)
+    sort_score(score_unres_start)
     sort_score(score_decoded)
 
     # Check decoded Score is identical to the reference one
     scores_equals = check_scores_equals(
-        score,
+        score_unres_start,
         score_decoded,
         check_tempos=tokenizer.config.use_tempos and tokenization != "MuMIDI",
         check_time_signatures=tokenizer.config.use_time_signatures,
@@ -449,7 +458,6 @@ def tokenize_and_check_equals_return_all(
         check_pitch_bends=tokenizer.config.use_pitch_bends,
         log_prefix=log_prefix,
     )
-
     # Checks types and values conformity following the rules
     err_tse = tokenizer.tokens_errors(tokens)
     if isinstance(err_tse, list):
@@ -458,8 +466,15 @@ def tokenize_and_check_equals_return_all(
         scores_equals = False
         print(f"{log_prefix} Validation of tokens types / values successions failed")
 
-    return tokens, score_decoded, score, score_unres, not scores_equals, err_tse
+    return tokens, score_decoded, score, score_unres_start, not scores_equals, err_tse
 
+def copy_start_times(score, unres_score):
+    for i, track in enumerate(score.tracks):
+        unres_track = unres_score.tracks[i]
+        for j, note in enumerate(track.notes):
+            unres_note = unres_track.notes[j]
+            note.time = unres_note.time
+    return score
 
 def del_invalid_time_sig(
     time_sigs: list[TimeSignature], time_sigs_tokenizer: list[TimeSignature]

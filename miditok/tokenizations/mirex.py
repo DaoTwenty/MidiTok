@@ -464,7 +464,6 @@ class MIREX(MusicTokenizer):
                     if not previous_token.split("_")[0] == "Delta":
                         if int(tok_val) == 0:
                             sign_factor = -1
-                            continue
                         else:
                             sign_factor = 1
                     
@@ -680,6 +679,7 @@ class MIREX(MusicTokenizer):
         if self.config.use_microtiming:
             dic["Delta"] = {first_note_token_type}
             dic["Position"].add("Delta")
+            dic["Delta"].add("Delta")
         if self.config.use_pitch_intervals:
             for token_type in ("PitchIntervalTime", "PitchIntervalChord"):
                 dic[token_type] = {"Velocity"}
