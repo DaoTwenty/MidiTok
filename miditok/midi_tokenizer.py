@@ -7,10 +7,9 @@ import math
 import sys
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable, Sequence
-from copy import deepcopy
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 from huggingface_hub import ModelHubMixin as HFHubMixin
@@ -30,7 +29,6 @@ from symusic.core import (
     PedalTickList,
     PitchBendTickList,
     ScoreTick,
-    TempoTickList,
     TimeSignatureTickList,
 )
 
@@ -46,6 +44,17 @@ from tokenizers import pre_tokenizers as _pre_tokenizers
 from tokenizers import trainers as _tok_trainers
 from tqdm import tqdm
 
+from .attribute_controls import (
+    BarAttributeControl,
+    BarNoteDensity,
+    BarNoteDuration,
+    BarOnsetPolyphony,
+    BarPitchClass,
+    TrackNoteDensity,
+    TrackNoteDuration,
+    TrackOnsetPolyphony,
+    TrackRepetition,
+)
 from .classes import Event, TokenizerConfig, TokSequence
 from .constants import (
     ABC_FILES_EXTENSIONS,
@@ -75,8 +84,11 @@ from .utils import (
     compute_ticks_per_bar,
     convert_ids_tensors_to_list,
     detect_chords,
+    get_bars_ticks,
+    get_beats_ticks,
     get_score_programs,
     get_score_ticks_per_beat,
+    is_track_empty,
     merge_same_program_tracks,
     remove_duplicated_notes,
 )
@@ -87,6 +99,11 @@ from .utils.utils import (
     np_get_closest,
     tempo_qpm_to_mspq,
 )
+
+if TYPE_CHECKING:
+    from symusic.core import TempoTickList
+
+    from .attribute_controls import AttributeControl
 
 
 class MusicTokenizer(ABC, HFHubMixin):
@@ -110,8 +127,6 @@ class MusicTokenizer(ABC, HFHubMixin):
         tokenizer_config: TokenizerConfig = None,
         params: str | Path | None = None,
     ) -> None:
-        # Initialize params
-        self.config = deepcopy(tokenizer_config)
         # vocab of prime tokens, can be viewed as unique char / bytes
         self._vocab_base = {}
         # the other way, to decode id (int) -> token (str)
@@ -126,27 +141,33 @@ class MusicTokenizer(ABC, HFHubMixin):
         self._model = None
         # Used in _notes_to_events, especially MIDILike
         self._note_on_off = False
-        # Determines how the tokenizer will handle multiple tracks: either each track
-        # as a single independent token stream (False), or all the tracks as a single
-        # token stream (True).
-        self.one_token_stream = False
 
+        # Initialize config
         # Loading params, or initializing them from args
         if params is not None:
             # Will overwrite self.config
             self._load_from_json(params)
         # If no TokenizerConfig is given, we falls back to the default parameters
-        elif self.config is None:
+        elif tokenizer_config is None:
             self.config = TokenizerConfig()
+        else:
+            self.config = tokenizer_config
 
         # Tweak the tokenizer's configuration and / or attributes before creating the
         # vocabulary. This method is intended to be overridden by inheriting tokenizer
         # classes
         self._tweak_config_before_creating_voc()
 
-        # Set one_token_stream mode according to the config params
-        if self.config.use_programs:
-            self.one_token_stream = self.config.one_token_stream_for_programs
+        # Determines whether the tokenizer will produce a single sequence of tokens for
+        # all the tracks one token sequence per track. This is attribute is distinct
+        # from `config.one_token_stream_for_programs` as they might not be equal (e.g.
+        # MMM). `tokenizer.one_token_stream` is meant to be used for i/o format
+        # purposes whereas `config.one_token_stream_for_programs` is used for Score
+        # preprocessing (merging tracks or not) and tokenization (all tracks at once or
+        # treated separately).
+        self.one_token_stream = (
+            self.config.use_programs and self.config.one_token_stream_for_programs
+        )
 
         # Time Signatures
         # Need to be set before creating duration values/tokens.
@@ -247,6 +268,21 @@ class MusicTokenizer(ABC, HFHubMixin):
         # loaded.
         if len(self.vocab) == 0:
             self.__create_vocabulary()
+
+        # Attribute controls
+        self.attribute_controls = []
+        if self.config.one_token_stream_for_programs or self.is_multi_voc:
+            self._disable_attribute_controls()
+            warnings.warn(
+                "Attribute controls are not compatible with "
+                "'config.one_token_stream_for_programs' and multi-vocabulary "
+                "tokenizers. Disabling them from the config.",
+                stacklevel=2,
+            )
+        else:
+            self._initialize_attribute_controls()
+
+        # Token type graph
         self.tokens_types_graph = self._create_token_types_graph()
         self._add_special_tokens_to_types_graph()
         self._token_types_indexes = {}
@@ -281,12 +317,65 @@ class MusicTokenizer(ABC, HFHubMixin):
         # customized by tokenizer classes.
         pass
 
+    def _initialize_attribute_controls(self) -> None:
+        if self.config.ac_polyphony_track:
+            self.add_attribute_control(
+                TrackOnsetPolyphony(
+                    self.config.ac_polyphony_min, self.config.ac_polyphony_max
+                )
+            )
+        if self.config.ac_polyphony_bar:
+            self.add_attribute_control(
+                BarOnsetPolyphony(
+                    self.config.ac_polyphony_min, self.config.ac_polyphony_max
+                )
+            )
+        if self.config.ac_pitch_class_bar:
+            self.add_attribute_control(BarPitchClass())
+        if self.config.ac_note_density_track:
+            self.add_attribute_control(
+                TrackNoteDensity(
+                    self.config.ac_note_density_track_min,
+                    self.config.ac_note_density_track_max,
+                )
+            )
+        if self.config.ac_note_density_bar:
+            self.add_attribute_control(
+                BarNoteDensity(self.config.ac_note_density_bar_max)
+            )
+        if self.config.ac_note_duration_bar:
+            self.add_attribute_control(BarNoteDuration())
+        if self.config.ac_note_duration_track:
+            self.add_attribute_control(TrackNoteDuration())
+        if self.config.ac_repetition_track:
+            self.add_attribute_control(
+                TrackRepetition(
+                    self.config.ac_repetition_track_num_bins,
+                    self.config.ac_repetition_track_num_consec_bars,
+                    self.config.pitch_range,
+                )
+            )
+
+    def add_attribute_control(self, attribute_control: AttributeControl) -> None:
+        """
+        Add a :class:`miditok.attribute_control.AttributeControl` to the tokenizer.
+
+        The tokens of the attribute controls will also be added to the vocabulary.
+
+        :param attribute_control: :class:`miditok.attribute_control.AttributeControl` to
+            add to the tokenizer.
+        """
+        self.attribute_controls.append(attribute_control)
+        for token in attribute_control.tokens:
+            if token not in self.vocab:
+                self.add_to_vocab(token)
+
     @property
     def pad_token_id(self) -> int:
         """
-        Return the id of the padding token (`PAD_None`). It is usually 0.
+        Return the id of the padding token (``PAD_None``). It is usually 0.
 
-        :return: id of the padding token (`PAD_None`).
+        :return: id of the padding token (``PAD_None``).
         """
         return (
             self._vocab_base["PAD_None"]
@@ -408,9 +497,10 @@ class MusicTokenizer(ABC, HFHubMixin):
         Its notes attributes (times, pitches, velocities) will be downsampled and
         sorted, duplicated notes removed, as well as tempos. Empty tracks (with no
         note) will be removed from the ``symusic.Score`` object. Notes with pitches
-        outside ``self.config.pitch_range`` will be deleted.
-        This method is **not inplace** and performs no alteration on the provided
-        ``score`` object.
+        outside ``self.config.pitch_range`` will be deleted. Tracks with programs not
+        supported by the tokenizer will be deleted.
+
+        This method is **not inplace** and does not alter the provided ``score`` object.
 
         :param score: ``symusic.Score`` object to preprocess.
         :param micro_resample: True if score must resample to microtiming resolution
@@ -451,10 +541,8 @@ class MusicTokenizer(ABC, HFHubMixin):
                 time_signatures_soa["time"] * (new_tpq / score.ticks_per_quarter)
             ).astype(np.int32)
             score = score.resample(new_tpq, min_dur=1)
-            score.time_signatures = TimeSignatureTickList.from_numpy(
-                time_signatures_soa["time"],
-                time_signatures_soa["numerator"],
-                time_signatures_soa["denominator"],
+            score.time_signatures = TimeSignature.from_numpy(
+                **time_signatures_soa,
             )
         # Otherwise we do a copy in order to make sure no inplace operation is performed
         # on the provided Score object.
@@ -466,7 +554,7 @@ class MusicTokenizer(ABC, HFHubMixin):
         # Merge instruments of the same program / inst before preprocessing them.
         # This allows to avoid potential duplicated notes in some multitrack settings
         # This can however mess up chord detections.
-        if self.config.use_programs and self.one_token_stream:
+        if self.config.use_programs and self.config.one_token_stream_for_programs:
             merge_same_program_tracks(score.tracks)
 
         # Process time signature changes
@@ -502,17 +590,12 @@ class MusicTokenizer(ABC, HFHubMixin):
         # Preprocess track events
         for t in range(len(score.tracks) - 1, -1, -1):
             # Delete track only there is nothing inside being used
-            if (
-                len(score.tracks[t].notes) == 0
-                and (
-                    not self.config.use_pitch_bends
-                    or len(score.tracks[t].pitch_bends) == 0
-                )
-                and (
-                    not self.config.use_sustain_pedals
-                    or len(score.tracks[t].pedals) == 0
-                )
-            ):
+            program = -1 if score.tracks[t].is_drum else score.tracks[t].program
+            if is_track_empty(
+                score.tracks[t],
+                check_pedals=self.config.use_sustain_pedals,
+                check_pitch_bend=self.config.use_pitch_bends,
+            ) or (self.config.use_programs and program not in self.config.programs):
                 del score.tracks[t]
                 continue
 
@@ -538,16 +621,10 @@ class MusicTokenizer(ABC, HFHubMixin):
                 )
 
             # Delete track only there is nothing inside being used
-            if (
-                len(score.tracks[t].notes) == 0
-                and (
-                    not self.config.use_pitch_bends
-                    or len(score.tracks[t].pitch_bends) == 0
-                )
-                and (
-                    not self.config.use_sustain_pedals
-                    or len(score.tracks[t].pedals) == 0
-                )
+            if is_track_empty(
+                score.tracks[t],
+                check_pedals=self.config.use_sustain_pedals,
+                check_pitch_bend=self.config.use_pitch_bends,
             ):
                 del score.tracks[t]
                 continue
@@ -1067,31 +1144,47 @@ class MusicTokenizer(ABC, HFHubMixin):
             if dur_idx_last is None:
                 break
 
-    def _score_to_tokens(self, score: Score) -> TokSequence | list[TokSequence]:
+    def _score_to_tokens(
+        self,
+        score: Score,
+        attribute_controls_indexes: Mapping[int, Mapping[int, Sequence[int] | bool]]
+        | None = None,
+    ) -> TokSequence | list[TokSequence]:
         r"""
         Convert a **preprocessed** ``symusic.Score`` object to a sequence of tokens.
 
         The workflow of this method is as follows: the global events (*Tempo*,
         *TimeSignature*...) and track events (*Pitch*, *Velocity*, *Pedal*...) are
-        gathered into a list, then the time events are added. If `one_token_stream` is
+        gathered into a list, then the time events are added. If ``one_token_stream`` is
         ``True``, all events of all tracks are treated all at once, otherwise the
         events of each track are treated independently.
 
         :param score: the :class:`symusic.Score` object to convert.
+        :param attribute_controls_indexes: indices of the attribute controls to compute
+            and associated tracks and bars. This argument has to be provided as a
+            dictionary mapping track indices to dictionaries mapping attribute control
+            indices (indexing ``tokenizer.attribute_controls``) to a sequence of bar
+            indexes if the AC is "bar-level" or anything if it is "track-level".
+            Its structure is as:
+            ``{track_idx: {ac_idx: Any (track ac) | [bar_idx, ...] (bar ac)}}``
+            This argument is meant to be used when training a model in order to make it
+            learn to generate tokens accordingly to the attribute controls.
         :return: a :class:`miditok.TokSequence` if ``tokenizer.one_token_stream`` is
             ``True``, else a list of :class:`miditok.TokSequence` objects.
         """
         # Create events list
         all_events = []
-        if not self.one_token_stream:
+        if not self.config.one_token_stream_for_programs:
             if len(score.tracks) == 0:
                 all_events.append([])
             else:
                 all_events = [[] for _ in range(len(score.tracks))]
+        if attribute_controls_indexes is None:
+            attribute_controls_indexes = {}
 
         # Global events (Tempo, TimeSignature)
         global_events = self._create_global_events(score)
-        if self.one_token_stream:
+        if self.config.one_token_stream_for_programs:
             all_events += global_events
         else:
             for i in range(len(all_events)):
@@ -1116,17 +1209,26 @@ class MusicTokenizer(ABC, HFHubMixin):
             high_res_ticks_per_beat = None
 
         # Adds track tokens
+        ticks_bars = get_bars_ticks(score, only_notes_onsets=True)
+        ticks_beats = get_beats_ticks(score, only_notes_onsets=True)
         if self.high_res_score is not None:
             all_events_high_res = deepcopy(all_events)
         else: 
             all_events_high_res = None
 
         for ti, track in enumerate(score.tracks):
-            track_events = self._create_track_events(track, ticks_per_beat)
+            track_events = self._create_track_events(
+                track,
+                ticks_per_beat,
+                score.ticks_per_quarter,
+                ticks_bars,
+                ticks_beats,
+                attribute_controls_indexes.get(ti, None),
+            )
             if self.high_res_score is not None:
                 high_res_track = self.high_res_score.tracks[ti]
                 track_events_high_res = self._create_track_events(high_res_track, high_res_ticks_per_beat, high_res = True)
-            if self.one_token_stream:
+            if self.config.one_token_stream_for_programs:
                 all_events += track_events
                 if all_events_high_res is not None:
                     all_events_high_res += track_events_high_res
@@ -1163,9 +1265,12 @@ class MusicTokenizer(ABC, HFHubMixin):
                 self._insert_program_change_events(all_events)
                 if all_events_high_res is not None:
                     self._insert_program_change_events(all_events_high_res)
+        # Special case where there are only tempos/time sigs, we still need to sort them
+        elif len(score.tracks) == 0 and len(all_events[0]) > 2:
+            self._sort_events(all_events[0])
 
         # Add time events
-        if self.one_token_stream:
+        if self.config.one_token_stream_for_programs:
             self.high_res_events = all_events_high_res
             all_events = self._add_time_events(all_events, score.ticks_per_quarter)
             self.high_res_events = None
@@ -1179,6 +1284,18 @@ class MusicTokenizer(ABC, HFHubMixin):
                     all_events[i], score.ticks_per_quarter
                 )
                 self.high_res_events = None
+                # Add program tokens at the beginning of the sequences if using
+                # "program_changes" and not in "one_token_stream" mode.
+                if self.config.program_changes and len(score.tracks) > 0:
+                    program = (
+                        score.tracks[i].program if not score.tracks[i].is_drum else -1
+                    )
+                    # If the first token is a "Track_Start" the program token is
+                    # inserted after
+                    all_events[i].insert(
+                        0 if all_events[i][0].type_ != "Track" else 1,
+                        Event("Program", program, 0),
+                    )
                 tok_sequence.append(TokSequence(events=all_events[i]))
                 self.complete_sequence(tok_sequence[-1])
 
@@ -1187,9 +1304,22 @@ class MusicTokenizer(ABC, HFHubMixin):
     def _sort_events(self, events: list[Event]) -> None:
         # Can be overridden by subclasses if required (MIDILike)
         events.sort(key=lambda e: e.time)
+        # Set Events of track-level attribute controls from -1 to 0 after sorting
+        if len(self.attribute_controls) > 0:
+            for event in events:
+                if not event.type_.startswith("ACTrack"):
+                    break
+                event.time = 0
 
     def _create_track_events(
-        self, track: Track, ticks_per_beat: np.ndarray = None, high_res = False
+        self,
+        track: Track,
+        ticks_per_beat: np.ndarray,
+        time_division: int,
+        ticks_bars: Sequence[int],
+        ticks_beats: Sequence[int],
+        attribute_controls_indexes: Mapping[int, Sequence[int] | bool] | None = None,
+        high_res = False
     ) -> list[Event]:
         r"""
         Extract the tokens/events from a track (``symusic.Track``).
@@ -1208,6 +1338,16 @@ class MusicTokenizer(ABC, HFHubMixin):
             each portion and the number of ticks per beat respectively.
             This argument is not required if the tokenizer is not using *Duration*,
             *PitchInterval* or *Chord* tokens. (default: ``None``)
+        :param time_division: time division in ticks per quarter note of the file.
+        :param ticks_bars: ticks indicating the beginning of each bar.
+        :param ticks_beats: ticks indicating the beginning of each beat.
+        :param attribute_controls_indexes: indices of the attribute controls to compute
+            This argument has to be provided as a dictionary mapping attribute control
+            indices (indexing ``tokenizer.attribute_controls``) to a sequence of
+            bar indexes if the AC is "bar-level" or anything if it is "track-level".
+            Its structure is as: ``{ac_idx: Any (track ac) | [bar_idx, ...] (bar ac)}``
+            This argument is meant to be used when training a model in order to make it
+            learn to generate tokens accordingly to the attribute controls.
         :return: sequence of corresponding ``Event``s.
         """
         if high_res:
@@ -1232,6 +1372,22 @@ class MusicTokenizer(ABC, HFHubMixin):
         previous_note_onset = -max_time_interval - 1
         previous_pitch_onset = -128  # lowest at a given time
         previous_pitch_chord = -128  # for chord intervals
+
+        # Attribute controls
+        if attribute_controls_indexes:
+            for ac_idx, tracks_bars_idx in attribute_controls_indexes.items():
+                if (
+                    isinstance(self.attribute_controls[ac_idx], BarAttributeControl)
+                    and len(tracks_bars_idx) == 0
+                ):
+                    continue
+                events += self.attribute_controls[ac_idx].compute(
+                    track,
+                    time_division,
+                    ticks_bars,
+                    ticks_beats,
+                    tracks_bars_idx,
+                )
 
         # Add sustain pedal
         if self.config.use_sustain_pedals:
@@ -1474,7 +1630,7 @@ class MusicTokenizer(ABC, HFHubMixin):
 
     def _create_global_events(self, score: Score) -> list[Event]:
         r"""
-        Create the *global* music tokens: `Tempo` and `TimeSignature`.
+        Create the *global* music tokens: ``Tempo`` and ``TimeSignature``.
 
         :param score: ``symusic.Score`` to extract the events from.
         :return: list of ``miditok.classes.Event``.
@@ -1535,6 +1691,8 @@ class MusicTokenizer(ABC, HFHubMixin):
         score: Score | Path,
         encode_ids: bool = True,
         no_preprocess_score: bool = False,
+        attribute_controls_indexes: Mapping[int, Mapping[int, Sequence[int] | bool]]
+        | None = None,
     ) -> TokSequence | list[TokSequence]:
         r"""
         Tokenize a music file (MIDI/abc), given as a ``symusic.Score`` or a file path.
@@ -1559,6 +1717,19 @@ class MusicTokenizer(ABC, HFHubMixin):
             preprocessed ``symusic.Score`` along with the tokens to not have to
             preprocess it twice as this method preprocesses it inplace.
             (default: ``False``)
+        :param attribute_controls_indexes: indices of the attribute controls to compute
+            and associated tracks and bars. This argument has to be provided as a
+            dictionary mapping track indices to dictionaries mapping attribute control
+            indices (indexing ``tokenizer.attribute_controls``) to a sequence of bar
+            indexes if the AC is "bar-level" or anything if it is "track-level".
+            Its structure is as:
+            ``{track_idx: {ac_idx: Any (track ac) | [bar_idx, ...] (bar ac)}}``
+            This argument is meant to be used when training a model in order to make it
+            learn to generate tokens accordingly to the attribute controls. For maximum
+            safety, it should be used with ``no_preprocess_score`` with an already
+            preprocessed ``symusic.Score`` in order to make sure that the provided
+            tracks indexes will remain correct as the preprocessing might delete or
+            merge tracks depending on the tokenizer's configuration.
         :return: a :class:`miditok.TokSequence` if ``tokenizer.one_token_stream`` is
             ``True``, else a list of :class:`miditok.TokSequence` objects.
         """
@@ -1575,7 +1746,7 @@ class MusicTokenizer(ABC, HFHubMixin):
             score = self.preprocess_score(score)
 
         # Tokenize it
-        tokens = self._score_to_tokens(score)
+        tokens = self._score_to_tokens(score, attribute_controls_indexes)
         # Add bar/beat ticks here to TokSeq as they need to be from preprocessed Score
         add_bar_beats_ticks_to_tokseq(tokens, score)
 
@@ -1914,6 +2085,17 @@ class MusicTokenizer(ABC, HFHubMixin):
         """
         raise NotImplementedError
 
+    def _disable_attribute_controls(self) -> None:
+        # To be called in `_tweak_config_before_creating_voc` by tokenizers classes
+        self.config.ac_polyphony_track = False
+        self.config.ac_polyphony_bar = False
+        self.config.ac_pitch_class_bar = False
+        self.config.ac_note_density_track = False
+        self.config.ac_note_density_bar = False
+        self.config.ac_note_duration_bar = False
+        self.config.ac_note_duration_track = False
+        self.config.ac_repetition_track = False
+
     @abstractmethod
     def _create_base_vocabulary(self) -> list[str | list[str]]:
         r"""
@@ -1925,6 +2107,9 @@ class MusicTokenizer(ABC, HFHubMixin):
         vocabulary as a dictionary. Special tokens have to be given when creating the
         tokenizer, and will be added to the vocabulary by
         :class:`miditok.MusicTokenizer`.
+
+        **Attribute control tokens are added when creating the tokenizer by the**
+        ``MusicTokenizer.add_attribute_control`` **method.**
 
         :return: the vocabulary as a list of string.
         """
@@ -2081,7 +2266,6 @@ class MusicTokenizer(ABC, HFHubMixin):
         special_token: bool = False,
         vocab_idx: int | None = None,
         byte_: str | None = None,
-        add_to_model: bool = False,
     ) -> None:
         r"""
         Add an event to the vocabulary. Its id will be the length of the vocab.
@@ -2095,8 +2279,6 @@ class MusicTokenizer(ABC, HFHubMixin):
             token is used to encode-decode ids with the tokenizer's model (BPE, Unigram,
             WordPiece). If None is given, it will default to ``chr(id_ + CHR_ID_START)``
             . (default: ``None``)
-        :param add_to_model: the token will be added to the model vocabulary
-            too. (default: ``None``)
         """
         token_str = token if isinstance(token, str) else str(token)
 
@@ -2110,7 +2292,14 @@ class MusicTokenizer(ABC, HFHubMixin):
             if token not in self.config.special_tokens:
                 self.config.special_tokens.append(token)
 
-        if vocab_idx is not None:
+        dict_vocab = self.vocab if vocab_idx is None else self.vocab[vocab_idx]
+        if token_str in dict_vocab:
+            token_id = dict_vocab[token_str]
+            warnings.warn(
+                f"Token {token_str} is already in the vocabulary at idx {token_id}.",
+                stacklevel=2,
+            )
+        elif vocab_idx is not None:
             self._vocab_base[vocab_idx][token_str] = len(self._vocab_base[vocab_idx])
             self.__vocab_base_inv[vocab_idx][len(self.__vocab_base_inv[vocab_idx])] = (
                 token_str
@@ -2125,7 +2314,7 @@ class MusicTokenizer(ABC, HFHubMixin):
                 byte_ = chr(id_ + CHR_ID_START)
             self._vocab_base_id_to_byte[id_] = byte_
             self._vocab_base_byte_to_token[byte_] = token
-            if self._model is not None and add_to_model:
+            if self._model is not None:
                 self._model.add_tokens([byte_])
 
     def _create_chords_tokens(self) -> list[str]:
@@ -3003,10 +3192,10 @@ class MusicTokenizer(ABC, HFHubMixin):
         The resulting json files will have an ``ids`` entry containing the token ids.
         The format of the ids will correspond to the format of the tokenizer
         (``tokenizer.io_format``). Note that the file tree of the source files, up to
-        the deepest common root directory if `files_paths` is given as a list of paths,
-        will be reproducing in ``out_dir``. The config of the tokenizer will be saved
-        as a file named ``tokenizer_config_file_name`` (default: ``tokenizer.json``)
-        in the ``out_dir`` directory.
+        the deepest common root directory if ``files_paths`` is given as a list of
+        paths, will be reproducing in ``out_dir``. The config of the tokenizer will be
+        saved as a file named ``tokenizer_config_file_name`` (default:
+        ``tokenizer.json``) in the ``out_dir`` directory.
 
         :param files_paths: paths of the music files (MIDI, abc). It can also be a path
             to a directory, in which case this method will recursively find the MIDI and
@@ -3363,7 +3552,6 @@ class MusicTokenizer(ABC, HFHubMixin):
         """Return the serializable dictionary form of the tokenizer."""
         params = {
             "config": self.config.to_dict(serialize=True),
-            "one_token_stream": self.one_token_stream,
             "tokenization": self.__class__.__name__,
             "miditok_version": CURRENT_MIDITOK_VERSION,
             "symusic_version": CURRENT_SYMUSIC_VERSION,
@@ -3542,10 +3730,6 @@ class MusicTokenizer(ABC, HFHubMixin):
                     key = old_add_tokens_attr[key]
                 setattr(self.config, key, value)
                 continue
-            if key == "unique_track":
-                # For config files <= v2.1.1 before the attribute is renamed
-                self.one_token_stream = value
-                continue
             if key == "has_bpe":
                 # For config files < v3.0.3 before the attribute becomes a property
                 continue
@@ -3677,7 +3861,7 @@ class MusicTokenizer(ABC, HFHubMixin):
         if self.is_multi_voc:
             tmp.append("multi-voc")
         if len(tmp) > 0:
-            out_str += f"({', '.join(tmp)})"
+            out_str += f" ({', '.join(tmp)})"
 
         # Trained
         if self.is_trained:

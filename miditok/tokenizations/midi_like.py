@@ -25,19 +25,19 @@ class MIDILike(MusicTokenizer):
     (``config.additional_params["max_duration"]``) to be given as a tuple of three
     integers following ``(num_beats, num_frames, res_frames)``, the resolutions being
     in the frames per beat.
-    If you specify `use_programs` as `True` in the config file, the tokenizer will add
-    ``Program`` tokens before each `Pitch` tokens to specify its instrument, and will
-    treat all tracks as a single stream of tokens.
+    If you specify ``use_programs`` as ``True`` in the config file, the tokenizer will
+    add ``Program`` tokens before each ``Pitch`` tokens to specify its instrument, and
+    will treat all tracks as a single stream of tokens.
 
-    **Note:** as `MIDILike` uses *TimeShifts* events to move the time from note to
+    **Note:** as ``MIDILike`` uses *TimeShifts* events to move the time from note to
     note, it could be unsuited for tracks with long pauses. In such case, the
-    maximum *TimeShift* value will be used. Also, the `MIDILike` tokenizer might alter
+    maximum *TimeShift* value will be used. Also, the ``MIDILike`` tokenizer might alter
     the durations of overlapping notes. If two notes of the same instrument with the
     same pitch are overlapping, i.e. a first one is still being played when a second
     one is also played, the offset time of the first will be set to the onset time of
     the second. This is done to prevent unwanted duration alterations that could happen
-    in such case, as the `NoteOff` token associated to the first note will also end the
-    second one.
+    in such case, as the ``NoteOff`` token associated to the first note will also end
+    the second one.
     **Note:** When decoding multiple token sequences (of multiple tracks), i.e. when
     ``config.use_programs`` is False, only the tempos and time signatures of the first
     sequence will be decoded for the whole music.
@@ -137,6 +137,12 @@ class MIDILike(MusicTokenizer):
         # This could be removed if we find a way to insert NoteOff tokens before Chords
         if self.config.use_chords:
             events.sort(key=lambda e: (e.time, self._order(e)))
+            # Set Events of track-level attribute controls from -1 to 0 after sorting
+            if len(self.attribute_controls) > 0:
+                for event in events:
+                    if not event.type_.startswith("ACTrack"):
+                        break
+                    event.time = 0
         else:
             super()._sort_events(events)
 
@@ -193,7 +199,7 @@ class MIDILike(MusicTokenizer):
         :return: the ``symusic.Score`` object.
         """
         # Unsqueeze tokens in case of one_token_stream
-        if self.one_token_stream:  # ie single token seq
+        if self.config.one_token_stream_for_programs:  # ie single token seq
             tokens = [tokens]
         for i in range(len(tokens)):
             tokens[i] = tokens[i].tokens
@@ -224,7 +230,7 @@ class MIDILike(MusicTokenizer):
 
         def clear_active_notes() -> None:
             if max_duration is not None:
-                if self.one_token_stream:
+                if self.config.one_token_stream_for_programs:
                     for program, active_notes_ in active_notes.items():
                         for pitch_, note_ons in active_notes_.items():
                             for onset_tick, vel_ in note_ons:
@@ -263,7 +269,7 @@ class MIDILike(MusicTokenizer):
                     max_duration_str, ticks_per_beat
                 )
             # Set track / sequence program if needed
-            if not self.one_token_stream:
+            if not self.config.one_token_stream_for_programs:
                 is_drum = False
                 if programs is not None:
                     current_program, is_drum = programs[si]
@@ -325,14 +331,17 @@ class MIDILike(MusicTokenizer):
                         if max_duration is not None and duration > max_duration:
                             duration = max_duration
                         new_note = Note(note_onset_tick, duration, pitch, vel)
-                        if self.one_token_stream:
+                        if self.config.one_token_stream_for_programs:
                             check_inst(current_program)
                             tracks[current_program].notes.append(new_note)
                         else:
                             current_track.notes.append(new_note)
                 elif tok_type == "Program":
                     current_program = int(tok_val)
-                    if not self.one_token_stream and self.config.program_changes:
+                    if (
+                        not self.config.one_token_stream_for_programs
+                        and self.config.program_changes
+                    ):
                         if current_program != -1:
                             current_track.program = current_program
                         else:
@@ -363,7 +372,7 @@ class MIDILike(MusicTokenizer):
                             # Add instrument if it doesn't exist, can happen for the
                             # first tokens
                             new_pedal = Pedal(current_tick, duration)
-                            if self.one_token_stream:
+                            if self.config.one_token_stream_for_programs:
                                 check_inst(pedal_prog)
                                 tracks[pedal_prog].pedals.append(new_pedal)
                             else:
@@ -379,7 +388,7 @@ class MIDILike(MusicTokenizer):
                             active_pedals[pedal_prog],
                             current_tick - active_pedals[pedal_prog],
                         )
-                        if self.one_token_stream:
+                        if self.config.one_token_stream_for_programs:
                             check_inst(pedal_prog)
                             tracks[pedal_prog].pedals.append(
                                 Pedal(
@@ -392,14 +401,16 @@ class MIDILike(MusicTokenizer):
                         del active_pedals[pedal_prog]
                 elif tok_type == "PitchBend":
                     new_pitch_bend = PitchBend(current_tick, int(tok_val))
-                    if self.one_token_stream:
+                    if self.config.one_token_stream_for_programs:
                         check_inst(current_program)
                         tracks[current_program].pitch_bends.append(new_pitch_bend)
                     else:
                         current_track.pitch_bends.append(new_pitch_bend)
 
             # Add current_inst to score and handle notes still active
-            if not self.one_token_stream and not is_track_empty(current_track):
+            if not self.config.one_token_stream_for_programs and not is_track_empty(
+                current_track
+            ):
                 score.tracks.append(current_track)
                 clear_active_notes()
                 active_notes[current_track.program] = {
@@ -410,11 +421,11 @@ class MIDILike(MusicTokenizer):
                 }
 
         # Handle notes still active
-        if self.one_token_stream:
+        if self.config.one_token_stream_for_programs:
             clear_active_notes()
 
         # Add global events to the Score
-        if self.one_token_stream:
+        if self.config.one_token_stream_for_programs:
             score.tracks = list(tracks.values())
         score.tempos = tempo_changes
         score.time_signatures = time_signature_changes
@@ -431,6 +442,9 @@ class MIDILike(MusicTokenizer):
         vocabulary as a dictionary. Special tokens have to be given when creating the
         tokenizer, and will be added to the vocabulary by
         :class:`miditok.MusicTokenizer`.
+
+        **Attribute control tokens are added when creating the tokenizer by the**
+        ``MusicTokenizer.add_attribute_control`` **method.**
 
         :return: the vocabulary as a list of string.
         """

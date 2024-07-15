@@ -1,9 +1,12 @@
 """Module containing utils methods than can be used outside of tokenization."""
 
-from .split_utils import (
+from .split import (
     get_average_num_tokens_per_note,
     split_files_for_training,
+    split_score_per_beats,
     split_score_per_note_density,
+    split_score_per_ticks,
+    split_score_per_tracks,
     split_seq_in_subsequences,
     split_tokens_files_to_subsequences,
 )
@@ -20,15 +23,13 @@ from .utils import (
     get_num_notes_per_bar,
     get_score_programs,
     get_score_ticks_per_beat,
+    is_track_empty,
     merge_same_program_tracks,
     merge_scores,
     merge_tracks,
     merge_tracks_per_class,
     num_bar_pos,
     remove_duplicated_notes,
-    split_score_per_beats,
-    split_score_per_ticks,
-    split_score_per_tracks,
 )
 
 __all__ = [
@@ -39,10 +40,12 @@ __all__ = [
     "detect_chords",
     "filter_dataset",
     "fix_offsets_overlapping_notes",
+    "get_average_num_tokens_per_note",
     "get_bars_ticks",
     "get_beats_ticks",
     "get_score_programs",
     "get_score_ticks_per_beat",
+    "is_track_empty",
     "merge_scores",
     "merge_same_program_tracks",
     "merge_tracks",
@@ -53,7 +56,6 @@ __all__ = [
     "split_score_per_beats",
     "split_score_per_ticks",
     "split_score_per_tracks",
-    "get_average_num_tokens_per_note",
     "split_files_for_training",
     "split_score_per_note_density",
     "split_tokens_files_to_subsequences",

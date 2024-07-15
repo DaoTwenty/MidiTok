@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import TYPE_CHECKING
+
+import numpy as np
 
 import miditok
 from miditok import MusicTokenizer
@@ -10,9 +13,12 @@ from miditok.classes import Event, TokSequence
 from miditok.constants import MMM_COMPATIBLE_TOKENIZERS
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
 
     from symusic import Score
+
+    from miditok import TokenizerConfig
 
 
 class MMM(MusicTokenizer):
@@ -35,14 +41,41 @@ class MMM(MusicTokenizer):
 
     **Note:** When decoding tokens with tempos, only the tempos of the first track
     will be decoded.
+
+    :param tokenizer_config: the tokenizer's configuration, as a
+        :class:`miditok.TokenizerConfig` object.
+    :param params: path to a tokenizer config file. This will override other arguments
+        and load the tokenizer based on the config file. This is particularly useful if
+        the tokenizer learned Byte Pair Encoding. (default: None)
     """
 
+    def __init__(
+        self,
+        tokenizer_config: TokenizerConfig = None,
+        params: str | Path | None = None,
+    ) -> None:
+        # Directly call super method
+        # __in_init is used to not call the `add_to_vocab` method for the base_tokenizer
+        # when creating the vocab of the MMM object. The MMM
+        self.__in_init = True
+        super().__init__(tokenizer_config, params)
+        # Set to True, whereas `config.one_token_stream_for_programs` is False
+        self.one_token_stream = True
+        self.__in_init = False
+        # We don't need to specifically load the base_tokenizer from the config file as
+        # it can be entirely created from the `self` config file only and will only be
+        # used for the `_add_time_events`, `_sort_events`, `_tokens_to_score`,
+        # `_tokens_errors` and mirrored base vocabulary (created from config).
+
     def _tweak_config_before_creating_voc(self) -> None:
+        # The Programs are specified at the beginning of each track token sequence.
         self.config.use_programs = True
         self.config.program_changes = True
-        self.config.one_token_stream_for_programs = True
-
-        self.concatenate_track_sequences = True
+        # one_token_stream_for_programs is False so that the base_tokenizer treats each
+        # track independently ((I,T) io) but one_token_stream True (set in __init__)
+        # so that self (MMM)
+        # has a (T) io as it will concatenate the tracks token sequences.
+        self.config.one_token_stream_for_programs = False
 
         # Checks base tokenizer argument
         if "base_tokenizer" not in self.config.additional_params:
@@ -67,7 +100,6 @@ class MMM(MusicTokenizer):
 
         # Create base tokenizer
         base_tokenizer_config = self.config.copy()
-        base_tokenizer_config.one_token_stream_for_programs = False
         self.base_tokenizer = getattr(miditok, tokenizer_name)(base_tokenizer_config)
         self.base_tokenizer.config.use_programs = True
         self._note_on_off = self.base_tokenizer._note_on_off
@@ -99,6 +131,8 @@ class MMM(MusicTokenizer):
         score: Score | Path,
         encode_ids: bool = True,
         no_preprocess_score: bool = False,
+        attribute_controls_indexes: Mapping[int, Mapping[int, Sequence[int] | bool]]
+        | None = None,
         concatenate_track_sequences: bool = True,
     ) -> TokSequence | list[TokSequence]:
         r"""
@@ -124,41 +158,102 @@ class MMM(MusicTokenizer):
             preprocessed ``symusic.Score`` along with the tokens to not have to
             preprocess it twice as this method preprocesses it inplace.
             (default: ``False``)
+        :param attribute_controls_indexes: indices of the attribute controls to compute
+            and associated tracks and bars. This argument has to be provided as a
+            dictionary mapping track indices to dictionaries mapping attribute control
+            indices (indexing ``tokenizer.attribute_controls``) to a sequence of bar
+            indexes if the AC is "bar-level" or anything if it is "track-level".
+            Its structure is as:
+            ``{track_idx: {ac_idx: Any (track ac) | [bar_idx, ...] (bar ac)}}``
+            This argument is meant to be used when training a model in order to make it
+            learn to generate tokens accordingly to the attribute controls.
         :param concatenate_track_sequences: will concatenate the token sequences of each
             track after tokenizing them. (default: ``True``)
-        :return: a :class:`miditok.TokSequence` if ``tokenizer.one_token_stream`` is
+        :return: a :class:`miditok.TokSequence` if ``concatenate_track_sequences`` is
             ``True``, else a list of :class:`miditok.TokSequence` objects.
         """
-        self.concatenate_track_sequences = concatenate_track_sequences
-        return super().encode(score, encode_ids, no_preprocess_score)
-
-    def _score_to_tokens(self, score: Score) -> TokSequence | list[TokSequence]:
-        r"""
-        Convert a **preprocessed** ``symusic.Score`` object to a sequence of tokens.
-
-        We need to override the parent method to concatenate the tracks sequences.
-
-        The workflow of this method is as follows: the global events (*Tempo*,
-        *TimeSignature*...) and track events (*Pitch*, *Velocity*, *Pedal*...) are
-        gathered into a list, then the time events are added. If `one_token_stream` is
-        ``True``, all events of all tracks are treated all at once, otherwise the
-        events of each track are treated independently.
-
-        :param score: the :class:`symusic.Score` object to convert.
-        :return: a :class:`miditok.TokSequence` if ``tokenizer.one_token_stream`` is
-            ``True``, else a list of :class:`miditok.TokSequence` objects.
-        """
-        self.one_token_stream = False
-        sequences = super()._score_to_tokens(score)
-        self.one_token_stream = True
-
+        # Need to override to set this class attribute that will be used in
+        # `_score_to_tokens`.
+        sequences = super().encode(
+            score,
+            encode_ids,
+            no_preprocess_score,
+            attribute_controls_indexes,
+        )
         # Concatenate the sequences
-        if self.concatenate_track_sequences:
+        if concatenate_track_sequences:
             return sum(sequences)
         return sequences
 
+    def encode_token_ids(self, seq: TokSequence | list[TokSequence]) -> None:
+        """
+        Encode a :class:`miditok.TokSequence` with BPE, Unigram or WordPiece.
+
+        The method works inplace and only alters the sequence's ``.ids``.
+        The method also works with lists of :class:`miditok.TokSequence`.
+        If a list is given, the model will encode all sequences in one batch to speed up
+        the operation.
+
+        :param seq: :class:`miditok.TokSequence` to encode ids.
+        """
+        # If no split --> just call parent method
+        if self.config.encode_ids_split == "no":
+            super().encode_token_ids(seq)
+
+        # If `seq` is not a TokSequence (so a list) --> recursively call this method
+        elif isinstance(seq, list):
+            for subseq in seq:
+                self.encode_token_ids(subseq)
+
+        # Otherwise (it's a TokSequence) we must make sure to split the ids per
+        # bars/beats for each separate track: splitting the TokSequence as the parent
+        # method doesn't handle concatenated tracks in one single token sequence.
+        else:
+            seqs_split = self.split_tokseq_per_track(
+                deepcopy(seq), keep_track_tokens=True
+            )
+            super().encode_token_ids(seqs_split)
+
+            # Concatenate ids of the split sequences now encoded
+            seq.ids = []
+            for subseq in seqs_split:
+                seq.ids += subseq.ids
+            seq.are_ids_encoded = True
+
     def _sort_events(self, events: list[Event]) -> None:
         self.base_tokenizer._sort_events(events)
+
+    def split_tokseq_per_track(
+        self,
+        tokseq: TokSequence,
+        keep_track_tokens: bool = False,
+    ) -> list[TokSequence]:
+        """
+        Split an MMM :class:`miditok.TokSequence` per tracks.
+
+        :param tokseq: :class:`miditok.TokSequence` token sequence.
+        :param keep_track_tokens: whether to keep the ``Track_Start/End`` tokens.
+            (default: ``False``)
+        :return: list :class:`miditok.TokSequence`, one for each track in ``tokseq``.
+        """
+        track_tokens_idx = np.where(np.array(tokseq.ids) == self.vocab["Track_Start"])[
+            0
+        ].tolist()
+        if len(track_tokens_idx) == 0:
+            return [tokseq]
+
+        tokseqs = []
+        for i, track_idx in enumerate(track_tokens_idx):
+            if i + 1 == len(track_tokens_idx):
+                idx_end = None
+            elif keep_track_tokens:
+                idx_end = track_tokens_idx[i + 1]
+            else:
+                idx_end = track_tokens_idx[i + 1] - 1
+            idx_start = track_idx if keep_track_tokens else track_idx + 1
+            tokseqs.append(tokseq[idx_start:idx_end])
+
+        return tokseqs
 
     def _tokens_to_score(
         self,
@@ -177,21 +272,7 @@ class MMM(MusicTokenizer):
             (default: ``None``)
         :return: the ``symusic.Score`` object.
         """
-        tokseqs = []
-        i = 0
-        while i < len(tokens):
-            if tokens.tokens[i] != "Track_Start":
-                i += 1
-                continue
-
-            j = i
-            while j < len(tokens) and tokens.tokens[j] != "Track_End":
-                j += 1
-
-            # Extract the subseq
-            tokseqs.append(tokens[i + 1 : j])
-            i = j
-
+        tokseqs = self.split_tokseq_per_track(tokens)
         return self.base_tokenizer._tokens_to_score(tokseqs)
 
     def _create_base_vocabulary(self) -> list[str]:
@@ -205,15 +286,12 @@ class MMM(MusicTokenizer):
         tokenizer, and will be added to the vocabulary by
         :class:`miditok.MusicTokenizer`.
 
+        **Attribute control tokens are added when creating the tokenizer by the**
+        ``MusicTokenizer.add_attribute_control`` **method.**
+
         :return: the vocabulary as a list of string.
         """
-        # `_tweak_config_before_creating_voc` already called, this method returns the
-        # vocab of the base_tokenizer, without the special tokens as they will be
-        # re-added by the `__create_vocabulary` method.
-        base_voc = list(self.base_tokenizer.vocab.keys())
-        for special_token in self.config.special_tokens:
-            base_voc.remove(special_token)
-        return base_voc
+        return self.base_tokenizer._create_base_vocabulary()
 
     def _create_token_types_graph(self) -> dict[str, set[str]]:
         r"""
@@ -249,3 +327,33 @@ class MMM(MusicTokenizer):
             err += self.base_tokenizer._tokens_errors(tokens[i + 1 : j])
             i = j
         return err
+
+    def add_to_vocab(
+        self,
+        token: str | Event,
+        special_token: bool = False,
+        vocab_idx: int | None = None,
+        byte_: str | None = None,
+    ) -> None:
+        r"""
+        Add an event to the vocabulary. Its id will be the length of the vocab.
+
+        :param token: token to add, as a formatted string of the form "Type_Value",
+            e.g. Pitch_80, or an Event.
+        :param special_token: whether the token is special. (default: ``False``)
+        :param vocab_idx: idx of the vocabulary (in case of embedding pooling).
+            (default: ``None``)
+        :param byte_: unique byte associated to the token. The associated byte of a
+            token is used to encode-decode ids with the tokenizer's model (BPE, Unigram,
+            WordPiece). If None is given, it will default to ``chr(id_ + CHR_ID_START)``
+            . (default: ``None``)
+        """
+        # Overridden to make sure the vocabs of self and base_tokenizer remain identical
+        if not self.__in_init:
+            self.base_tokenizer.add_to_vocab(
+                token,
+                special_token,
+                vocab_idx,
+                byte_,
+            )
+        super().add_to_vocab(token, special_token, vocab_idx, byte_)

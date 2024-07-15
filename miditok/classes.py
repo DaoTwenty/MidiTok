@@ -13,6 +13,21 @@ from typing import TYPE_CHECKING, Any, Literal
 from numpy import ndarray
 
 from .constants import (
+    AC_NOTE_DENSITY_BAR,
+    AC_NOTE_DENSITY_BAR_MAX,
+    AC_NOTE_DENSITY_TRACK,
+    AC_NOTE_DENSITY_TRACK_MAX,
+    AC_NOTE_DENSITY_TRACK_MIN,
+    AC_NOTE_DURATION_BAR,
+    AC_NOTE_DURATION_TRACK,
+    AC_PITCH_CLASS_BAR,
+    AC_POLYPHONY_BAR,
+    AC_POLYPHONY_MAX,
+    AC_POLYPHONY_MIN,
+    AC_POLYPHONY_TRACK,
+    AC_REPETITION_TRACK,
+    AC_REPETITION_TRACK_NUM_BINS,
+    AC_REPETITION_TRACK_NUM_CONSEC_BARS,
     BEAT_RES,
     BEAT_RES_REST,
     CHORD_MAPS,
@@ -152,7 +167,7 @@ class TokSequence:
         """
         return self._split_per_ticks(self._ticks_beats)
 
-    def _split_per_ticks(self, ticks: list[int]) -> list[TokSequence]:
+    def _split_per_ticks(self, ticks: Sequence[int]) -> list[TokSequence]:
         idxs = [0]
         ti_prev = 0
         for bi in range(1, len(ticks)):
@@ -384,7 +399,7 @@ class TokenizerConfig:
         events. In multitrack setting, The value of each ``Pedal`` token will be equal
         to the program of the track. (default: ``False``)
     :param use_pitch_bends: will use ``PitchBend`` tokens. In multitrack setting, a
-        ``Program`` token will be added before each ``PitchBend` token.
+        ``Program`` token will be added before each ``PitchBend`` token.
         (default: ``False``)
     :param use_pitch_intervals: if given True, will represent the pitch of the notes
         with pitch intervals tokens. This way, successive and simultaneous notes will
@@ -396,7 +411,7 @@ class TokenizerConfig:
     :param use_programs: will use ``Program`` tokens to specify the instrument/MIDI
         program of the notes, if the tokenizer is compatible (:ref:`TSD`, :ref:`REMI`,
         :ref:`MIDI-Like`, :ref:`Structured` and :ref:`CPWord`). Use this parameter with
-        the ``programs``, ``one_token_stream_for_programs`` and `program_changes`
+        the ``programs``, ``one_token_stream_for_programs`` and ``program_changes``
         arguments. By default, it will prepend a ``Program`` tokens before each
         ``Pitch``/``NoteOn`` token to indicate its associated instrument, and will
         treat all the tracks of a file as a single sequence of tokens. :ref:`CPWord`,
@@ -460,8 +475,8 @@ class TokenizerConfig:
         durations you expect. (default: ``False``)
     :param pitch_bend_range: range of the pitch bend to consider, to be given as a
         tuple with the form ``(lowest_value, highest_value, num_of_values)``. There
-        will be ``num_of_values`` tokens equally spaced between ``lowest_value` and
-        `highest_value``. (default: ``(-8192, 8191, 32)``)
+        will be ``num_of_values`` tokens equally spaced between ``lowest_value`` and
+        ``highest_value``. (default: ``(-8192, 8191, 32)``)
     :param delete_equal_successive_time_sig_changes: setting this option True will
         delete identical successive time signature changes when preprocessing a music
         file after loading it. For examples, if a file has two time signature changes
@@ -481,9 +496,8 @@ class TokenizerConfig:
         ``symusic.Score`` in a single sequence of tokens. A ``Program`` token will
         prepend each ``Pitch``, ``NoteOn`` and ``NoteOff`` tokens to indicate their
         associated program / instrument. Note that this parameter is always set to True
-        for :ref:`MuMIDI` and :ref:`MMM`. Disabling will make the tokenizer not use
-        ``Programs``, but will allow to still have ``Program`` tokens in the vocabulary.
-        (default: ``True``)
+        for :ref:`MuMIDI`. If disabled, the tokenizer will still use ``Program`` tokens
+        but will tokenize each track independently. (default: ``True``)
     :param program_changes: to be used with ``use_programs``. If given ``True``, the
         tokenizer will place ``Program`` tokens whenever a note is being played by an
         instrument different from the last one. This mimics the ProgramChange MIDI
@@ -501,6 +515,42 @@ class TokenizerConfig:
         argument is only used when ``use_drums_pitch_tokens`` is ``True``. (default:
         ``(27, 88)``, recommended range from the GM2 specs without the "Applause" at
         pitch 88 of the orchestra drum set)
+    :param ac_polyphony_track: enables track-level polyphony attribute control tokens
+        using :class:`miditok.attribute_controls.TrackOnsetPolyphony`. (default:
+        ``False``).
+    :param ac_polyphony_bar: enables bar-level polyphony attribute control tokens
+        using :class:`miditok.attribute_controls.BarOnsetPolyphony`. (default:
+        ``False``).
+    :param ac_polyphony_min: minimum number of simultaneous notes for polyphony
+        attribute control. (default: ``1``)
+    :param ac_polyphony_max: maximum number of simultaneous notes for polyphony
+        attribute control. (default: ``6``)
+    :param ac_pitch_class_bar: enables bar-level pitch class attribute control tokens
+        using :class:`miditok.attribute_controls.BarPitchClass`. (default: ``False``).
+    :param ac_note_density_track: enables track-level note density attribute control
+        tokens using :class:`miditok.attribute_controls.TrackNoteDensity`. (default:
+        ``False``).
+    :param ac_note_density_track_min: minimum note density per bar to consider.
+        (default: ``0``)
+    :param ac_note_density_track_max: maximum note density per bar to consider.
+        (default: ``18``)
+    :param ac_note_density_bar: enables bar-level note density attribute control
+        tokens using :class:`miditok.attribute_controls.BarNoteDensity`. (default:
+        ``False``).
+    :param ac_note_density_bar_max: maximum note density per bar to consider.
+        (default: ``18``)
+    :param ac_note_duration_bar: enables bar-level note duration attribute control
+        tokens using :class:`miditok.attribute_controls.BarNoteDuration`. (default:
+        ``False``).
+    :param ac_note_duration_track: enables track-level note duration attribute control
+        tokens using :class:`miditok.attribute_controls.TrackNoteDuration`. (default:
+        ``False``).
+    :param ac_repetition_track: enables track-level repetition attribute control tokens
+        using :class:`miditok.attribute_controls.TrackRepetition`. (default: ``False``).
+    :param ac_repetition_track_num_bins: number of levels of repetitions. (default:
+        ``10``)
+    :param ac_repetition_track_num_consec_bars: number of successive bars to
+        compare the repetition similarity between bars. (default: ``4``)
     :param kwargs: additional parameters that will be saved in
         ``config.additional_params``.
     """
@@ -547,6 +597,21 @@ class TokenizerConfig:
         max_pitch_interval: int = MAX_PITCH_INTERVAL,
         pitch_intervals_max_time_dist: bool = PITCH_INTERVALS_MAX_TIME_DIST,
         drums_pitch_range: tuple[int, int] = DRUM_PITCH_RANGE,
+        ac_polyphony_track: bool = AC_POLYPHONY_TRACK,
+        ac_polyphony_bar: bool = AC_POLYPHONY_BAR,
+        ac_polyphony_min: int = AC_POLYPHONY_MIN,
+        ac_polyphony_max: int = AC_POLYPHONY_MAX,
+        ac_pitch_class_bar: bool = AC_PITCH_CLASS_BAR,
+        ac_note_density_track: bool = AC_NOTE_DENSITY_TRACK,
+        ac_note_density_track_min: int = AC_NOTE_DENSITY_TRACK_MIN,
+        ac_note_density_track_max: int = AC_NOTE_DENSITY_TRACK_MAX,
+        ac_note_density_bar: bool = AC_NOTE_DENSITY_BAR,
+        ac_note_density_bar_max: int = AC_NOTE_DENSITY_BAR_MAX,
+        ac_note_duration_bar: bool = AC_NOTE_DURATION_BAR,
+        ac_note_duration_track: bool = AC_NOTE_DURATION_TRACK,
+        ac_repetition_track: bool = AC_REPETITION_TRACK,
+        ac_repetition_track_num_bins: int = AC_REPETITION_TRACK_NUM_BINS,
+        ac_repetition_track_num_consec_bars: int = AC_REPETITION_TRACK_NUM_CONSEC_BARS,
         max_microtime_depth: int = MAX_MICROTIME_DEPTH,
         microtime_base: int = MICROTIME_BASE,
         **kwargs,
@@ -667,7 +732,10 @@ class TokenizerConfig:
 
         # Programs
         self.programs: Sequence[int] = programs
-        self.one_token_stream_for_programs = one_token_stream_for_programs
+        # These needs to be set to False if the tokenizer is not using programs
+        self.one_token_stream_for_programs = (
+            one_token_stream_for_programs and use_programs
+        )
         self.program_changes = program_changes and use_programs
 
         # Pitch as interval tokens
@@ -690,6 +758,23 @@ class TokenizerConfig:
                     " consider to updateyour code with this new argument name.",
                     stacklevel=2,
                 )
+
+        # Attribute controls
+        self.ac_polyphony_track = ac_polyphony_track
+        self.ac_polyphony_bar = ac_polyphony_bar
+        self.ac_polyphony_min = ac_polyphony_min
+        self.ac_polyphony_max = ac_polyphony_max
+        self.ac_pitch_class_bar = ac_pitch_class_bar
+        self.ac_note_density_track = ac_note_density_track
+        self.ac_note_density_track_min = ac_note_density_track_min
+        self.ac_note_density_track_max = ac_note_density_track_max
+        self.ac_note_density_bar = ac_note_density_bar
+        self.ac_note_density_bar_max = ac_note_density_bar_max
+        self.ac_note_duration_bar = ac_note_duration_bar
+        self.ac_note_duration_track = ac_note_duration_track
+        self.ac_repetition_track = ac_repetition_track
+        self.ac_repetition_track_num_bins = ac_repetition_track_num_bins
+        self.ac_repetition_track_num_consec_bars = ac_repetition_track_num_consec_bars
 
         # Microtiming params
         self.max_microtime_depth = max_microtime_depth
@@ -806,7 +891,7 @@ class TokenizerConfig:
         Check two configs are equal.
 
         :param other: other config object to compare.
-        :return: `True` if all attributes are equal, `False` otherwise.
+        :return: ``True`` if all attributes are equal, ``False`` otherwise.
         """
         # We don't use the == operator as it yields False when comparing lists and
         # tuples containing the same elements. This method is not recursive and only

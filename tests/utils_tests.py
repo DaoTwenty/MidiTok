@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from copy import copy, deepcopy
+from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -18,10 +18,16 @@ from symusic import (
 )
 
 import miditok
+from miditok.attribute_controls import BarAttributeControl
 from miditok.constants import CHORD_MAPS, TIME_SIGNATURE, TIME_SIGNATURE_RANGE
+from miditok.utils import get_bars_ticks, get_beats_ticks
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     from symusic.core import TempoTickList
+
+    from miditok import MusicTokenizer, TokSequence
 
 SEED = 777
 
@@ -57,7 +63,7 @@ TIME_SIGNATURE_RANGE_TESTS = TIME_SIGNATURE_RANGE
 TIME_SIGNATURE_RANGE_TESTS.update({2: [2, 3, 4]})
 TIME_SIGNATURE_RANGE_TESTS[4].append(8)
 TOKENIZER_CONFIG_KWARGS = {
-    "special_tokens": ["PAD", "BOS_None", "EOS", "EOS_test_None"],
+    "special_tokens": ["PAD", "BOS_None", "EOS", "EOS-test_None"],
     "beat_res": {(0, 4): 8, (4, 12): 4, (12, 16): 2},
     "beat_res_rest": {(0, 2): 4, (2, 12): 2},
     "num_tempos": 32,
@@ -71,6 +77,19 @@ TOKENIZER_CONFIG_KWARGS = {
     "use_bar_end_tokens": True,
 }
 MAX_BAR_EMBEDDING = 2000
+
+# For attribute controls
+_TOKEN_TYPES_TRACK_ATTRIBUTE = {"Track", "Program", "ProgramChange"}
+_TOKEN_TYPES_BREAK_ITERATION = {
+    "Bar",
+    "TimeShift",
+    "TimeSig",
+    "Tempo",
+    "Pitch",
+    "NoteOn",
+}
+TRACKS_RANDOM_RATIO_RANGE = (0.2, 0.7)
+BARS_RANDOM_RATIO_RANGE = (0.2, 0.7)
 
 
 def adjust_tok_params_for_tests(tokenization: str, params: dict[str, Any]) -> None:
@@ -132,9 +151,7 @@ def sort_score(score: Score, sort_tracks: bool = True) -> None:
         score.tracks.sort(key=lambda x: (x.program, x.is_drum))
 
 
-def adapt_ref_score_before_tokenize(
-    score: Score, tokenizer: miditok.MusicTokenizer
-) -> None:
+def adapt_ref_score_before_tokenize(score: Score, tokenizer: MusicTokenizer) -> None:
     """
     Adapt (inplace) the contents of a Score before it is tokenized.
 
@@ -148,7 +165,10 @@ def adapt_ref_score_before_tokenize(
         # might be mixed up for notes with the same onset and duration values as the
         # tokens are decoded in a FIFO logic.
         # But before sorting, we need to merge the tracks if needed, and clip durations
-        if tokenizer.config.use_programs and tokenizer.one_token_stream:
+        if (
+            tokenizer.config.use_programs
+            and tokenizer.config.one_token_stream_for_programs
+        ):
             miditok.utils.merge_same_program_tracks(score.tracks)
 
         # If a max_duration is provided, we clip the durations of the notes before
@@ -193,7 +213,7 @@ def adapt_ref_score_before_tokenize(
 
 
 def adapt_ref_score_for_tests_assertion(
-    score: Score, tokenizer: miditok.MusicTokenizer
+    score: Score, tokenizer: MusicTokenizer
 ) -> Score:
     """
     Adapt a reference raw/unprocessed Score for test assertions.
@@ -209,32 +229,26 @@ def adapt_ref_score_for_tests_assertion(
     :return: a new ``symusic.Score`` object with track (and notes) sorted.
     """
     tokenization = type(tokenizer).__name__ if tokenizer is not None else None
-    new_score = copy(score)
-
-    # Merging is performed in preprocess only in one_token_stream mode
-    # but in multi token stream, decoding will actually keep one track per program
-    if tokenizer.config.use_programs and tokenizer.one_token_stream:
-        miditok.utils.merge_same_program_tracks(new_score.tracks)
 
     # Preprocess the Score: downsample it, remove notes outside of pitch range...
-    new_score = tokenizer.preprocess_score(new_score)
+    score = tokenizer.preprocess_score(score)
 
     # For Octuple, as tempo is only carried at notes times, we need to adapt
     # their times for comparison. Set tempo changes at onset times of notes.
     # We use the first track only, as it is the one for which tempos are decoded
     if tokenizer.config.use_tempos and tokenization in ["Octuple"]:
-        if len(new_score.tracks) > 0:
+        if len(score.tracks) > 0:
             adapt_tempo_changes_times(
-                new_score.tracks
-                if tokenizer.one_token_stream
-                else new_score.tracks[:1],
-                new_score.tempos,
+                score.tracks
+                if tokenizer.config.one_token_stream_for_programs
+                else score.tracks[:1],
+                score.tempos,
                 tokenizer.default_tempo,
             )
         else:
-            new_score.tempos = [Tempo(0, tokenizer.default_tempo)]
+            score.tempos = [Tempo(0, tokenizer.default_tempo)]
 
-    return new_score
+    return score
 
 
 def scores_notes_equals(
@@ -368,7 +382,7 @@ def check_scores_equals(
 
 def tokenize_and_check_equals(
     score: Score,
-    tokenizer: miditok.MusicTokenizer,
+    tokenizer: MusicTokenizer,
     file_name: str,
 ) -> tuple[Score, Score, bool]:
     tokenization = type(tokenizer).__name__
@@ -532,3 +546,69 @@ def clip_durations(
             tpb_idx += 1
         if note_pedal.duration > max_durations[tpb_idx, 1]:
             note_pedal.duration = max_durations[tpb_idx, 1]
+
+
+def check_control_tokens_are_well_inserted(
+    tokenizer: MusicTokenizer,
+    score: Score,
+    tokens: TokSequence | Sequence[TokSequence],
+    ac_indexes: Mapping[int, Mapping[int, bool | Sequence[int]]],
+) -> list[tuple[int, str]]:
+    errors = []
+
+    # If MMM split the token sequence per track
+    if isinstance(tokenizer, miditok.MMM):
+        tokens = tokenizer.split_tokseq_per_track(tokens, keep_track_tokens=True)
+
+    ticks_bars = get_bars_ticks(score, only_notes_onsets=True)
+    ticks_beats = get_beats_ticks(score, only_notes_onsets=True)
+    for track_idx, acs in ac_indexes.items():
+        for ac_idx, tracks_bars_idx in acs.items():
+            controls = tokenizer.attribute_controls[ac_idx].compute(
+                score.tracks[track_idx],
+                score.ticks_per_quarter,
+                ticks_bars,
+                ticks_beats,
+                tracks_bars_idx,
+            )
+            seq = tokens[track_idx]
+            if isinstance(tokenizer.attribute_controls[ac_idx], BarAttributeControl):
+                tokens_times = np.array([event.time for event in seq.events])
+                for control in controls:
+                    bar_tick = control.time
+                    control_token = str(control)
+                    token_bar_idx = np.where(tokens_times >= bar_tick)[0][0].item()
+                    offset = 0
+                    while (
+                        token_bar_idx + offset < len(seq.tokens)
+                        and seq.events[token_bar_idx + offset].time == bar_tick
+                        and seq.tokens[token_bar_idx + offset] != control_token
+                    ):
+                        offset += 1
+                    if seq.tokens[token_bar_idx + offset] != control_token:
+                        errors.append(
+                            (
+                                track_idx,
+                                f"bar-{bar_tick}_{control_token}",
+                            )
+                        )
+
+            # Track-level attribute control
+            # Just make sure the controls are present at the beginning (exc. MMM)
+            else:
+                controls_tokens = [str(control) for control in controls]
+                for control in controls_tokens:
+                    for token in seq.tokens:
+                        if token == control:
+                            break
+                        if token in controls_tokens:
+                            continue
+                        token_type = token.split("_")[0]
+                        if not token_type.startswith("ACTrack") and (
+                            token_type not in _TOKEN_TYPES_TRACK_ATTRIBUTE
+                            or token_type in _TOKEN_TYPES_BREAK_ITERATION
+                        ):
+                            errors.append((track_idx, control))
+                            break
+
+    return errors

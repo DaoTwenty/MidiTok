@@ -44,17 +44,23 @@ def get_labels_seq(score: Score, tokseq: miditok.TokSequence, _: Path) -> list[i
 @pytest.mark.parametrize(
     "tokenizer_cls", [miditok.TSD, miditok.Octuple], ids=["TSD", "Octuple"]
 )
-@pytest.mark.parametrize("one_token_stream", [True, False], ids=["1 strm", "n strm"])
+@pytest.mark.parametrize(
+    "one_token_stream_for_programs", [True, False], ids=["1 strm", "n strm"]
+)
 @pytest.mark.parametrize("split_files", [True, False], ids=["split", "no split"])
 @pytest.mark.parametrize("pre_tokenize", [True, False], ids=["pretok", "no pretok"])
+@pytest.mark.parametrize("ac_random_tracks_ratio", [None, (0.0, 1.0)])
+@pytest.mark.parametrize("ac_random_bars_ratio", [None, (0.0, 1.0)])
 @pytest.mark.parametrize("func_labels", [get_labels_seq_len, get_labels_seq])
 @pytest.mark.parametrize("num_overlap_bars", [0, 1], ids=["no overlap", "overlap"])
 def test_dataset_midi(
     tmp_path: Path,
     tokenizer_cls: Callable,
-    one_token_stream: bool,
+    one_token_stream_for_programs: bool,
     split_files: bool,
     pre_tokenize: bool,
+    ac_random_tracks_ratio: tuple[float, float] | None,
+    ac_random_bars_ratio: tuple[float, float] | None,
     func_labels: Callable,
     num_overlap_bars: int,
     files_paths: Sequence[Path] = MIDI_PATHS_MULTITRACK
@@ -64,7 +70,9 @@ def test_dataset_midi(
     max_seq_len: int = 1000,
 ):
     config = miditok.TokenizerConfig(
-        use_programs=one_token_stream, max_bar_embedding=MAX_BAR_EMBEDDING
+        use_programs=True,
+        one_token_stream_for_programs=one_token_stream_for_programs,
+        max_bar_embedding=MAX_BAR_EMBEDDING,
     )
     tokenizer = tokenizer_cls(config)
 
@@ -107,6 +115,8 @@ def test_dataset_midi(
         tokenizer["BOS_None"],
         tokenizer["EOS_None"],
         pre_tokenize=pre_tokenize,
+        ac_tracks_random_ratio_range=ac_random_tracks_ratio,
+        ac_bars_random_ratio_range=ac_random_bars_ratio,
         func_to_get_labels=func_labels,
     )
     t1 = time() - t0

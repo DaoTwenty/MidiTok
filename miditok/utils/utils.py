@@ -88,6 +88,37 @@ def get_score_programs(score: Score) -> list[tuple[int, bool]]:
     return [(int(track.program), track.is_drum) for track in score.tracks]
 
 
+def is_track_empty(
+    track: Track,
+    check_controls: bool = False,
+    check_pedals: bool = False,
+    check_pitch_bend: bool = False,
+) -> bool:
+    """
+    Return a boolean indicating if a ``symusic.Track`` is empty.
+
+    By default, only the notes are checked.
+
+    :param track: ``symusic.Track`` to check.
+    :param check_controls: whether to check the control changes. (default: ``False``)
+    :param check_pedals: whether to check the control changes. (default: ``False``)
+    :param check_pitch_bend: whether to check the pitch bends. (default: ``False``)
+    :return: a boolean indicating if the track has at least one element.
+    """
+    if check_controls and check_pedals and check_pitch_bend:
+        return track.empty()
+
+    is_empty = track.note_num() == 0
+    if check_controls:
+        is_empty &= len(track.controls) == 0
+    if check_pedals:
+        is_empty &= len(track.pedals) == 0
+    if check_pitch_bend:
+        is_empty &= len(track.pitch_bends) == 0
+
+    return is_empty
+
+
 def remove_duplicated_notes(
     notes: NoteTickList | dict[str, np.ndarray], consider_duration: bool = False
 ) -> None:
@@ -650,7 +681,7 @@ def compute_ticks_per_bar(time_sig: TimeSignature, time_division: int) -> int:
     )
 
 
-def get_bars_ticks(score: Score) -> list[int]:
+def get_bars_ticks(score: Score, only_notes_onsets: bool = False) -> list[int]:
     """
     Compute the ticks of the bars of a ``symusic.Score``.
 
@@ -659,11 +690,15 @@ def get_bars_ticks(score: Score) -> list[int]:
     software can proceed differently. Logic Pro, for example, uses the first one.
     I haven't found documentation or recommendations for this specific situation. It
     might be better to use the first one and discard the others.
+    Time signatures with non-positive numerator or denominator values (including 0) will
+    be ignored.
 
     :param score: ``symusic.Score`` to analyze.
+    :param only_notes_onsets: if enabled, bars at the end without any note onsets, i.e.
+        only active notes, will be ignored. (default: ``False``)
     :return: list of ticks for each bar.
     """
-    max_tick = score.end()
+    max_tick = _get_max_tick_only_onsets(score) if only_notes_onsets else score.end()
     if max_tick == 0:
         return [0]  # special case of empty file, we just list the first bar
 
@@ -671,18 +706,25 @@ def get_bars_ticks(score: Score) -> list[int]:
     time_sigs = copy(score.time_signatures)
     if len(time_sigs) == 0:
         time_sigs.append(TimeSignature(0, *TIME_SIGNATURE))
-    # Mock the last one to cover the last section in the loop below
-    if time_sigs[-1].time != max_tick:
-        time_sigs.append(TimeSignature(max_tick, *TIME_SIGNATURE))
+    # Mock the last one to cover the last section in the loop below in all cases, as it
+    # prevents the case in which the last time signature had an invalid numerator or
+    # denominator (that would have been skipped in the while loop below).
+    time_sigs.append(TimeSignature(max_tick, *TIME_SIGNATURE))
 
     # Section from tick 0 to first time sig is 4/4 if first time sig time is not 0
-    if time_sigs[0].time == 0:
+    if (
+        time_sigs[0].time == 0
+        and time_sigs[0].denominator > 0
+        and time_sigs[0].numerator > 0
+    ):
         current_time_sig = time_sigs[0]
     else:
         current_time_sig = TimeSignature(0, *TIME_SIGNATURE)
 
     # Compute bars, one time signature portion at a time
-    for time_signature in time_sigs:
+    for time_signature in time_sigs[1:]:  # there are at least two in the list
+        if time_signature.denominator <= 0 or time_signature.numerator <= 0:
+            continue
         ticks_per_bar = compute_ticks_per_bar(current_time_sig, score.ticks_per_quarter)
         ticks_diff = time_signature.time - current_time_sig.time
         num_bars = ceil(ticks_diff / ticks_per_bar)
@@ -694,7 +736,7 @@ def get_bars_ticks(score: Score) -> list[int]:
     return bars_ticks
 
 
-def get_beats_ticks(score: Score) -> list[int]:
+def get_beats_ticks(score: Score, only_notes_onsets: bool = False) -> list[int]:
     """
     Return the ticks of the beats of a ``symusic.Score``.
 
@@ -703,11 +745,15 @@ def get_beats_ticks(score: Score) -> list[int]:
     software can proceed differently. Logic Pro, for example, uses the first one.
     I haven't found documentation or recommendations for this specific situation. It
     might be better to use the first one and discard the others.
+    Time signatures with non-positive numerator or denominator values (including 0) will
+    be ignored.
 
     :param score: ``symusic.Score`` to analyze.
+    :param only_notes_onsets: if enabled, bars at the end without any note onsets, i.e.
+        only active notes, will be ignored. (default: ``False``)
     :return: list of ticks for each beat.
     """
-    max_tick = score.end()
+    max_tick = _get_max_tick_only_onsets(score) if only_notes_onsets else score.end()
     if max_tick == 0:
         return [0]  # special case of empty file, we just list the first beat
 
@@ -715,18 +761,25 @@ def get_beats_ticks(score: Score) -> list[int]:
     time_sigs = copy(score.time_signatures)
     if len(time_sigs) == 0:
         time_sigs.append(TimeSignature(0, *TIME_SIGNATURE))
-    # Mock the last one to cover the last section in the loop below
-    if time_sigs[-1].time != max_tick:
-        time_sigs.append(TimeSignature(max_tick, *TIME_SIGNATURE))
+    # Mock the last one to cover the last section in the loop below in all cases, as it
+    # prevents the case in which the last time signature had an invalid numerator or
+    # denominator (that would have been skipped in the while loop below).
+    time_sigs.append(TimeSignature(max_tick, *TIME_SIGNATURE))
 
     # Section from tick 0 to first time sig is 4/4 if first time sig time is not 0
-    if time_sigs[0].time == 0:
+    if (
+        time_sigs[0].time == 0
+        and time_sigs[0].denominator > 0
+        and time_sigs[0].numerator > 0
+    ):
         current_time_sig = time_sigs[0]
     else:
         current_time_sig = TimeSignature(0, *TIME_SIGNATURE)
 
     # Compute beats, one time signature portion at a time
-    for time_signature in time_sigs:
+    for time_signature in time_sigs[1:]:  # there are at least two in the list
+        if time_signature.denominator <= 0 or time_signature.numerator <= 0:
+            continue
         ticks_per_beat = compute_ticks_per_beat(
             current_time_sig.denominator, score.ticks_per_quarter
         )
@@ -738,6 +791,25 @@ def get_beats_ticks(score: Score) -> list[int]:
         current_time_sig = time_signature
 
     return beat_ticks
+
+
+def _get_max_tick_only_onsets(score: Score) -> int:
+    max_tick_tracks = [
+        max(
+            track.notes.numpy()["time"][-1] if len(track.notes) > 0 else 0,
+            track.controls.end(),
+            track.pitch_bends.end(),
+        )
+        for track in score.tracks
+    ]
+    return max(
+        score.tempos.end(),
+        score.time_signatures.end(),
+        score.key_signatures.end(),
+        score.lyrics.end(),
+        score.markers.end(),
+        max([0, *max_tick_tracks]),  # 0 in case there are no tracks
+    )
 
 
 def add_bar_beats_ticks_to_tokseq(
@@ -755,9 +827,9 @@ def add_bar_beats_ticks_to_tokseq(
     :param beat_ticks: ticks of the beats of the ``score``. Only used for recursivity.
     """
     if bar_ticks is None:
-        bar_ticks = get_bars_ticks(score)
+        bar_ticks = get_bars_ticks(score, only_notes_onsets=True)
     if beat_ticks is None:
-        beat_ticks = get_beats_ticks(score)
+        beat_ticks = get_beats_ticks(score, only_notes_onsets=True)
 
     # Recursively adds bars/beats ticks
     if isinstance(tokseq, list):
@@ -784,7 +856,7 @@ def get_num_notes_per_bar(
         return [] if tracks_indep else [0]
 
     # Get bar and note times
-    bar_ticks = get_bars_ticks(score)
+    bar_ticks = get_bars_ticks(score, only_notes_onsets=True)
     if bar_ticks[-1] != score.end():
         bar_ticks.append(score.end())
     tracks_times = [track.notes.numpy()["time"] for track in score.tracks]
@@ -858,107 +930,6 @@ def get_score_ticks_per_beat(score: Score) -> np.ndarray:
             del ticks_per_beat[i]
 
     return np.array(ticks_per_beat)
-
-
-def split_score_per_ticks(score: Score, ticks: list[int]) -> list[Score]:
-    r"""
-    Split a ``symusic.Score`` into several smaller ``symusic.Score``\s.
-
-    The ``symusic.Score`` chunks will all start at tick 0.
-    Example: for a ``symusic.Score`` with an end tick at 1000, and a list of tick
-    ``[2000, 5000, 7000]``, this method will return a list of four ``symusic.Score``
-    which correspond respectively to the portions of the original Score from tick 0 to
-    2000, 2000 to 5000, 5000 to 7000 and 10000 to 10000.
-
-    :param score: ``symusic.Score`` object to split.
-    :param ticks: list of ticks to which the score will be split.
-    :return: a list of segmented ``symusic.Score`` objects.
-    """
-    score_chunks = []
-    score_end_tick = score.end() + 1  # to encompass the last events
-    ticks = ticks.copy()
-    if ticks[-1] != score_end_tick:
-        ticks.append(score_end_tick)
-
-    current_tick = 0
-    for tick_end in ticks:
-        score_chunks.append(
-            score.clip(current_tick, tick_end, clip_end=False).shift_time(-current_tick)
-        )
-        current_tick = tick_end
-
-    return score_chunks
-
-
-def split_score_per_beats(
-    score: Score, max_num_beats: int, min_num_beats: int = 1
-) -> list[Score]:
-    """
-    Split a ``symusic.Score`` into several smaller chunks per number of beats.
-
-    This method splits a ``symusic.Score`` into smaller chunks that contains
-    ``max_num_beats`` beats. The ``symusic.Score`` chunks will all start at tick 0.
-
-    :param score: ``symusic.Score`` object to split.
-    :param max_num_beats: maximum number of beats per segment.
-    :param min_num_beats: minimum number of beats per segment. This only applied to the
-        last segment of the input score. (default: ``1``)
-    :return: a list of ``symusic.Score`` chunks.
-    """
-    if min_num_beats < 1:
-        raise ValueError(_ := f"`min_num_beats` must be > 0 (got {min_num_beats}).")
-
-    ticks_split = []
-    beats_ticks = get_beats_ticks(score)
-    current_beat = 0
-    while current_beat < len(beats_ticks):
-        # Determine the number of beats for this section
-        num_beats = min(len(beats_ticks) - current_beat, max_num_beats)
-        if num_beats < min_num_beats:
-            break
-
-        # Extract the section
-        if (
-            num_beats != max_num_beats
-            or current_beat == len(beats_ticks) - max_num_beats
-        ):
-            # Will be the last iteration
-            tick_end = score.end() + 1
-        else:
-            tick_end = beats_ticks[current_beat + num_beats]
-        if tick_end > score.end():
-            break
-        ticks_split.append(tick_end)
-        current_beat += num_beats
-
-    return split_score_per_ticks(score, ticks_split)
-
-
-def split_score_per_tracks(score: Score) -> list[Score]:
-    """
-    Split a ``symusic.Score`` into several scores for each of its tracks.
-
-    The split scores will all start at tick 0.
-    Example: for a score with an end tick at 1000, and a list of tick
-    ``[2000, 5000, 7000]``, this method will return a list of four scores which
-    correspond respectively to the portions of the original score from tick 0 to 2000,
-    2000 to 5000, 5000 to 7000 and 10000 to 10000.
-
-    :param score: ``symusic.Score`` object to split.
-    :return: a list of split ``symusic.Score`` objects.
-    """
-    scores_split = []
-    for track in score.tracks:
-        score_split = Score(score.tpq)
-        score_split.tempos = score.tempos
-        score_split.time_signatures = score.time_signatures
-        score_split.key_signatures = score.key_signatures
-        score_split.lyrics = score.lyrics
-        score_split.markers = score.markers
-        score_split.tracks.append(track.copy())
-
-        scores_split.append(score_split)
-    return scores_split
 
 
 def concat_scores(scores: Sequence[Score], end_ticks: Sequence[int]) -> Score:

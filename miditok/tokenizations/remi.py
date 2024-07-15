@@ -122,7 +122,10 @@ class REMI(MusicTokenizer):
                     ticks_per_pos = ticks_per_beat // self.config.max_num_pos_per_beat
                     break
         # Add the time events
-        for event in events:
+        for ei, event in enumerate(events):
+            if event.type_.startswith("ACTrack"):
+                all_events.append(event)
+                continue
             if event.time != previous_tick:
                 # (Rest)
                 if (
@@ -210,8 +213,9 @@ class REMI(MusicTokenizer):
                         )
 
                 # Position
-                if event.type_ != "TimeSig":
+                if event.type_ != "TimeSig" and not event.type_.startswith("ACBar"):
                     pos_index = (event.time - tick_at_current_bar) // ticks_per_pos
+                    # if event in TOKEN_TYPES_AC
                     all_events.append(
                         Event(
                             type_="Position",
@@ -242,6 +246,24 @@ class REMI(MusicTokenizer):
                 previous_tick -= 1
 
             all_events.append(event)
+            # Adds a Position token if the current event is a bar-level attribute
+            # control and the next one is at the same position, as the position token
+            # wasn't added previously.
+            if (
+                event.type_.startswith("ACBar")
+                and not events[ei + 1].type_.startswith("ACBar")
+                and event.time == events[ei + 1].time
+            ):
+                pos_index = (event.time - tick_at_current_bar) // ticks_per_pos
+                # if event in TOKEN_TYPES_AC
+                all_events.append(
+                    Event(
+                        type_="Position",
+                        value=pos_index,
+                        time=event.time,
+                        desc=event.time,
+                    )
+                )
 
             # Update max offset time of the notes encountered
             if event.type_ in {
@@ -282,7 +304,7 @@ class REMI(MusicTokenizer):
         :return: the ``symusic.Score`` object.
         """
         # Unsqueeze tokens in case of one_token_stream
-        if self.one_token_stream:  # ie single token seq
+        if self.config.one_token_stream_for_programs:  # ie single token seq
             tokens = [tokens]
         for i in range(len(tokens)):
             tokens[i] = tokens[i].tokens
@@ -346,7 +368,7 @@ class REMI(MusicTokenizer):
             active_pedals = {}
 
             # Set track / sequence program if needed
-            if not self.one_token_stream:
+            if not self.config.one_token_stream_for_programs:
                 is_drum = False
                 if programs is not None:
                     current_program, is_drum = programs[si]
@@ -423,7 +445,7 @@ class REMI(MusicTokenizer):
                                 pitch,
                                 int(vel),
                             )
-                            if self.one_token_stream:
+                            if self.config.one_token_stream_for_programs:
                                 check_inst(current_program)
                                 tracks[current_program].notes.append(new_note)
                             else:
@@ -438,7 +460,10 @@ class REMI(MusicTokenizer):
                         pass
                 elif tok_type == "Program":
                     current_program = int(tok_val)
-                    if not self.one_token_stream and self.config.program_changes:
+                    if (
+                        not self.config.one_token_stream_for_programs
+                        and self.config.program_changes
+                    ):
                         if current_program != -1:
                             current_track.program = current_program
                         else:
@@ -478,7 +503,7 @@ class REMI(MusicTokenizer):
                             # Add instrument if it doesn't exist, can happen for the
                             # first tokens
                             new_pedal = Pedal(current_tick, duration)
-                            if self.one_token_stream:
+                            if self.config.one_token_stream_for_programs:
                                 check_inst(pedal_prog)
                                 tracks[pedal_prog].pedals.append(new_pedal)
                             else:
@@ -494,7 +519,7 @@ class REMI(MusicTokenizer):
                             active_pedals[pedal_prog],
                             current_tick - active_pedals[pedal_prog],
                         )
-                        if self.one_token_stream:
+                        if self.config.one_token_stream_for_programs:
                             check_inst(pedal_prog)
                             tracks[pedal_prog].pedals.append(new_pedal)
                         else:
@@ -502,18 +527,20 @@ class REMI(MusicTokenizer):
                         del active_pedals[pedal_prog]
                 elif tok_type == "PitchBend":
                     new_pitch_bend = PitchBend(current_tick, int(tok_val))
-                    if self.one_token_stream:
+                    if self.config.one_token_stream_for_programs:
                         check_inst(current_program)
                         tracks[current_program].pitch_bends.append(new_pitch_bend)
                     else:
                         current_track.pitch_bends.append(new_pitch_bend)
 
             # Add current_inst to score and handle notes still active
-            if not self.one_token_stream and not is_track_empty(current_track):
+            if not self.config.one_token_stream_for_programs and not is_track_empty(
+                current_track
+            ):
                 score.tracks.append(current_track)
 
         # Add global events to the score
-        if self.one_token_stream:
+        if self.config.one_token_stream_for_programs:
             score.tracks = list(tracks.values())
         score.tempos = tempo_changes
         score.time_signatures = time_signature_changes
@@ -530,6 +557,9 @@ class REMI(MusicTokenizer):
         vocabulary as a dictionary. Special tokens have to be given when creating the
         tokenizer, and will be added to the vocabulary by
         :class:`miditok.MusicTokenizer`.
+
+        **Attribute control tokens are added when creating the tokenizer by the**
+        ``MusicTokenizer.add_attribute_control`` **method.**
 
         :return: the vocabulary as a list of string.
         """
@@ -593,6 +623,9 @@ class REMI(MusicTokenizer):
                     dic["Position"].add(token_type)
         if self.config.program_changes:
             dic["Duration"].add("Program")
+            # The first bar may be empty but the Program token will still be present
+            if self.config.additional_params["use_bar_end_tokens"]:
+                dic["Program"].add("Bar")
 
         if self.config.use_chords:
             dic["Chord"] = {first_note_token_type}
