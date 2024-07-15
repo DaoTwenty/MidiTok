@@ -4,7 +4,7 @@ name: Tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, microtiming]
   pull_request:
     branches: [main]
 
