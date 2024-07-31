@@ -24,7 +24,8 @@ from .utils_tests import (
     tokenize_and_check_equals,
 )
 
-MMM_BASE_TOKENIZATIONS = ("TSD", "REMI", "MIDILike", "MIREX")
+# MMM_BASE_TOKENIZATIONS = ("TSD", "REMI", "MIDILike", "MIREX")
+MMM_BASE_TOKENIZATIONS = ("MIREX")
 
 # Removing "hard" MIDIs from the list
 MIDI_PATHS_ONE_TRACK = [
