@@ -41,6 +41,8 @@ from .constants import (
     LOG_TEMPOS,
     MANDATORY_SPECIAL_TOKENS,
     MAX_PITCH_INTERVAL,
+    MAX_MICROTIME_DEPTH,
+    MICROTIME_BASE,
     NUM_TEMPOS,
     NUM_VELOCITIES,
     ONE_TOKEN_STREAM_FOR_PROGRAMS,
@@ -65,6 +67,7 @@ from .constants import (
     USE_TEMPOS,
     USE_TIME_SIGNATURE,
     USE_VELOCITIES,
+    USE_MICROTIMING
 )
 
 if TYPE_CHECKING:
@@ -94,6 +97,7 @@ class Event:
     time: int = -1
     program: int = 0
     desc: str | int = 0
+    delta: int = 0
 
     def __str__(self) -> str:
         """
@@ -590,6 +594,7 @@ class TokenizerConfig:
         use_velocities: bool = USE_VELOCITIES,
         use_note_duration_programs: Sequence[int] = USE_NOTE_DURATION_PROGRAMS,
         use_chords: bool = USE_CHORDS,
+        use_microtiming: bool = USE_MICROTIMING,
         use_rests: bool = USE_RESTS,
         use_tempos: bool = USE_TEMPOS,
         use_time_signatures: bool = USE_TIME_SIGNATURE,
@@ -624,6 +629,8 @@ class TokenizerConfig:
         max_pitch_interval: int = MAX_PITCH_INTERVAL,
         pitch_intervals_max_time_dist: bool = PITCH_INTERVALS_MAX_TIME_DIST,
         drums_pitch_range: tuple[int, int] = DRUM_PITCH_RANGE,
+        max_microtime_depth: int = MAX_MICROTIME_DEPTH,
+        microtime_base: int = MICROTIME_BASE,
         ac_polyphony_track: bool = AC_POLYPHONY_TRACK,
         ac_polyphony_bar: bool = AC_POLYPHONY_BAR,
         ac_polyphony_min: int = AC_POLYPHONY_MIN,
@@ -699,6 +706,7 @@ class TokenizerConfig:
         self.use_velocities: bool = use_velocities
         self.use_note_duration_programs: set[int] = set(use_note_duration_programs)
         self.use_chords: bool = use_chords
+        self.use_microtiming: bool = use_microtiming
         self.use_rests: bool = use_rests
         self.use_tempos: bool = use_tempos
         self.use_time_signatures: bool = use_time_signatures
@@ -797,6 +805,10 @@ class TokenizerConfig:
 
         # Drums
         self.drums_pitch_range = drums_pitch_range
+
+        # Microtiming params
+        self.max_microtime_depth = max_microtime_depth
+        self.microtime_base = microtime_base
 
         # Pop legacy kwargs
         legacy_args = (

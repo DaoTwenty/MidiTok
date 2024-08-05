@@ -183,7 +183,7 @@ class MusicTokenizer(ABC, HFHubMixin):
         # `self.config.max_num_pos_per_beat`, the other note values will have a
         # ticks/beat based on this base, i.e. `self.config.max_num_pos_per_beat`
         # multiplied by the factor between each note value and the maximum note value.
-        self._tpb_per_ts = self.__create_tpb_per_ts()
+        self._tpb_per_ts = self.__create_tpb_per_ts(self.config.max_num_pos_per_beat)
         # Default time division to use when decoding tokens to a ``symusic.Score``.
         # This is left as a class attribute and not a property as the config is not
         # intended to be modified after its creation. Ultimately, this could be
@@ -248,6 +248,20 @@ class MusicTokenizer(ABC, HFHubMixin):
         if self.config.use_pitch_bends:
             self.pitch_bends = self.__create_pitch_bends()
 
+        # Microtiming
+        if self.config.use_microtiming:
+            max_depth = self.config.max_microtime_depth
+            base = self.config.microtime_base
+            max_ts_denominator = max(self.config.time_signature_range.keys())
+            self.max_ticks_per_beat = compute_ticks_per_bar(max_ts_denominator, self.time_division)
+            self.max_ticks_per_pos = self.max_ticks_per_beat // self.config.max_num_pos_per_beat
+            self.microtime_max_res = 2 * int(np.ceil(np.emath.logn(base, self.max_ticks_per_pos // max_depth))) 
+            #self.microtime_max_res = 1000
+            self.microtime_min_res = 0
+            self.microtimes = np.arange(
+                0, base * (self.microtime_max_res - self.microtime_min_res),  dtype=np.intc
+            )
+
         # Vocabulary and token types graph
         # The vocabulary might have already been created if the tokenizer is being
         # loaded.
@@ -275,6 +289,29 @@ class MusicTokenizer(ABC, HFHubMixin):
 
         # For logging
         self._verbose = False
+
+    def init_high_resolution(self, score: Score) -> Score:
+
+        self.high_res_score = score.resample(score.ticks_per_quarter // self.config.max_microtime_depth)
+
+        self.high_res = {}
+        self.high_res["time_signatures"] = [TIME_SIGNATURE]
+        if self.config.use_time_signatures:
+            self.high_res["time_signatures"] = self.time_signatures
+        self.high_res["_tpb_per_ts"] = self.__create_tpb_per_ts(max_num_pos_per_beat = self.high_res_score.tpq)
+        self.high_res["time_division"] = self.high_res["_tpb_per_ts"][TIME_SIGNATURE[1]]
+        '''
+        self.high_res["durations"] = self._create_durations_tuples(config_beat_res = {(0, 4): self.high_res_score.tpq, (4, 12): self.high_res_score.tpq})
+        self.high_res["_tpb_to_time_array"] = self.__create_tpb_to_ticks_array(high_res = True)
+        self.high_res["_tpb_tokens_to_ticks"] = self.__create_tpb_tokens_to_ticks(high_res = True)
+        self.high_res["_tpb_ticks_to_tokens"] = self.__create_tpb_ticks_to_tokens(high_res = True)
+        self.high_res["rests"] = []
+        if self.config.use_rests:
+            self.high_res["rests"] = self.__create_rests(config_beat_res_rest = {(0, 4): self.high_res_score.tpq, (4, 12): self.high_res_score.tpq})
+        self.high_res["_tpb_to_rest_array"] = self.__create_tpb_to_ticks_array(rest=True, high_res=True)
+        self.high_res["_tpb_rests_to_ticks"] = self.__create_tpb_tokens_to_ticks(rest=True, high_res=True)
+        '''
+        #print(self.high_res)
 
     def _tweak_config_before_creating_voc(self) -> None:
         # called after setting the tokenizer's TokenizerConfig (.config). To be
@@ -450,7 +487,7 @@ class MusicTokenizer(ABC, HFHubMixin):
             return 0
         return int(self._tpb_to_rest_array[ticks_per_beat][0])
 
-    def preprocess_score(self, score: Score) -> Score:
+    def preprocess_score(self, score: Score) -> tuple[Score]:
         r"""
         Pre-process a ``symusic.Score`` object to resample its time and events values.
 
@@ -490,8 +527,12 @@ class MusicTokenizer(ABC, HFHubMixin):
             )
             new_tpq = self.config.max_num_pos_per_beat
 
+        # Store un-resampled score in case of microtiming
+        high_res_score = score
+
         # Resample time if needed (not inplace) and attribute preprocessed time sig.
         if score.ticks_per_quarter != new_tpq:
+            resampled = True and self.config.use_microtiming
             # Times of time signatures copy need to be resampled too
             time_signatures_soa = time_signatures_copy.numpy()
             time_signatures_soa["time"] = (
@@ -506,18 +547,26 @@ class MusicTokenizer(ABC, HFHubMixin):
         # on the provided Score object.
         # We make a copy here instead of at beginning as resample also makes a copy.
         else:
+            resampled = False
             score = score.copy()
             score.time_signatures = time_signatures_copy
+        high_res_score.time_signatures = time_signatures_copy
 
         # Merge instruments of the same program / inst before preprocessing them.
         # This allows to avoid potential duplicated notes in some multitrack settings
         # This can however mess up chord detections.
         if self.config.use_programs and self.config.one_token_stream_for_programs:
+            if resampled:
+                merge_same_program_tracks(high_res_score.tracks)
             merge_same_program_tracks(score.tracks)
 
         # Process time signature changes
         # We need to do it before computing the ticks_per_beat sections
         if self.config.use_time_signatures and len(score.time_signatures) > 0:
+            if resampled:
+                self._preprocess_time_signatures(
+                    high_res_score.time_signatures, high_res_score.ticks_per_quarter
+                )
             self._preprocess_time_signatures(
                 score.time_signatures, score.ticks_per_quarter
             )
@@ -533,17 +582,28 @@ class MusicTokenizer(ABC, HFHubMixin):
         ):
             if self.config.use_time_signatures:
                 ticks_per_beat = get_score_ticks_per_beat(score)
+                if resampled:
+                    high_res_ticks_per_beat = get_score_ticks_per_beat(high_res_score)
+                else:
+                    high_res_ticks_per_beat = None
             else:
                 ticks_per_beat = np.array([[score.end(), score.ticks_per_quarter]])
+                if resampled:
+                    high_res_ticks_per_beat = np.array([[high_res_score.end(), high_res_score.ticks_per_quarter]])
+                else: 
+                    high_res_ticks_per_beat = None
         else:
             ticks_per_beat = None
+            high_res_ticks_per_beat = None
         if (
             self.config.use_time_signatures
             and len({ts.denominator for ts in score.time_signatures}) > 1
         ):
             tpq_resampling_factors = self._get_score_resampling_factor(score)
+            high_res_tpq_resampling_factors = self._get_score_resampling_factor(high_res_score)
         else:
             tpq_resampling_factors = None
+            high_res_tpq_resampling_factors = None
 
         # Preprocess track events
         for t in range(len(score.tracks) - 1, -1, -1):
@@ -556,26 +616,56 @@ class MusicTokenizer(ABC, HFHubMixin):
             ) or (self.config.use_programs and program not in self.config.programs):
                 del score.tracks[t]
                 continue
+            if resampled:
+                program = -1 if high_res_score.tracks[t].is_drum else high_res_score.tracks[t].program
+                if is_track_empty(
+                    high_res_score.tracks[t],
+                    check_pedals=self.config.use_sustain_pedals,
+                    check_pitch_bend=self.config.use_pitch_bends,
+                ) or (self.config.use_programs and program not in self.config.programs):
+                    del high_res_score.tracks[t]
+                    continue
 
             # Preprocesses notes
             if len(score.tracks[t].notes) > 0:
-                self._preprocess_notes(
-                    score.tracks[t],
-                    tpq_resampling_factors,
-                    ticks_per_beat,
-                )
+                if resampled:
+                    self._preprocess_notes(
+                        score.tracks[t],
+                        tpq_resampling_factors,
+                        ticks_per_beat,
+                        high_res_score.tracks[t],
+                        high_res_tpq_resampling_factors,
+                        high_res_ticks_per_beat,
+                    )
+                else:
+                    self._preprocess_notes(
+                        score.tracks[t],
+                        tpq_resampling_factors,
+                        ticks_per_beat,
+                        None,
+                        None,
+                        None
+                    )
 
             # Resample pitch bend values
             if self.config.use_pitch_bends and len(score.tracks[t].pitch_bends) > 0:
                 score.tracks[t].pitch_bends = self._preprocess_pitch_bends(
                     score.tracks[t].pitch_bends, tpq_resampling_factors
                 )
+                if resampled:
+                    high_res_score.tracks[t].pitch_bends = self._preprocess_pitch_bends(
+                        high_res_score.tracks[t].pitch_bends, high_res_tpq_resampling_factors
+                    )
 
             # Resample pedals durations
             if self.config.use_sustain_pedals and len(score.tracks[t].pedals) > 0:
                 score.tracks[t].pedals = self._preprocess_pedals(
                     score.tracks[t].pedals, tpq_resampling_factors, ticks_per_beat
                 )
+                if resampled:
+                    high_res_score.tracks[t].pedals = self._preprocess_pedals(
+                        high_res_score.tracks[t].pedals, high_res_tpq_resampling_factors, high_res_ticks_per_beat
+                    )
 
             # Delete track only there is nothing inside being used
             if is_track_empty(
@@ -584,16 +674,23 @@ class MusicTokenizer(ABC, HFHubMixin):
                 check_pitch_bend=self.config.use_pitch_bends,
             ):
                 del score.tracks[t]
+                if resampled:
+                    del high_res_score.tracks[t]
                 continue
 
         # Process tempo changes
         if self.config.use_tempos:
             score.tempos = self._preprocess_tempos(score.tempos, tpq_resampling_factors)
+            if resampled:
+                high_res_score.tempos = self._preprocess_tempos(high_res_score.tempos, high_res_tpq_resampling_factors)
 
         # We do not change key signature changes, markers and lyrics here as they are
         # not used by MidiTok (yet)
 
-        return score
+        if not self.config.use_microtiming:
+            high_res_score = None
+
+        return score, high_res_score
 
     def _filter_unsupported_time_signatures(
         self, time_signatures: TimeSignatureTickList
@@ -626,6 +723,9 @@ class MusicTokenizer(ABC, HFHubMixin):
         resampling_factors: np.ndarray = None,
         ticks_per_beat: np.ndarray = None,
         min_duration: int = 1,
+        high_res_track: Track = None,
+        high_res_resampling_factors: np.ndarray = None,
+        high_res_ticks_per_beat: np.ndarray = None,
     ) -> None:
         r"""
         Resample inplace the note velocities, remove notes outside of pitch range.
@@ -654,6 +754,13 @@ class MusicTokenizer(ABC, HFHubMixin):
             durations of 0 ticks after resampling. (default: ``1``)
         """
         note_soa = track.notes.numpy()
+        hr = (high_res_track is not None)
+        # some steps may be useless for microtiming track
+        dx = False
+        if hr:
+            note_hr = high_res_track.notes.numpy()
+        else:
+            note_hr = None
 
         # Delete notes outside of pitch range
         pitch_range = (
@@ -671,8 +778,11 @@ class MusicTokenizer(ABC, HFHubMixin):
             mask[idx_out_of_pitch_range] = False
             for key in note_soa:
                 note_soa[key] = note_soa[key][mask]
+                if hr:
+                    note_hr[key] = note_hr[key][mask]
         if len(note_soa["time"]) == 0:
             track.notes = NoteTickList()
+            high_res_track.notes = NoteTickList()
             return
 
         # Compute new velocities
@@ -680,6 +790,10 @@ class MusicTokenizer(ABC, HFHubMixin):
             note_soa["velocity"] = np_get_closest(
                 self.velocities, np.array(note_soa["velocity"])
             )
+            if hr and dx:
+                note_hr["velocity"] = np_get_closest(
+                    self.velocities, np.array(note_hr["velocity"])
+                )
 
         # Adjust times if needed
         if resampling_factors is not None:
@@ -690,12 +804,21 @@ class MusicTokenizer(ABC, HFHubMixin):
             note_soa["time"] = self._adjust_time_to_tpb(
                 note_soa["time"], resampling_factors
             )
+            if hr and dx:
+                high_res_resampling_factors = self.__convert_resampling_ratios_ticks_to_idx(
+                    high_res_resampling_factors, note_hr["time"]
+                )
+                note_hr["time"] = self._adjust_time_to_tpb(
+                    note_hr["time"], high_res_resampling_factors
+                )
 
         # Resample duration values if NoteOff, otherwise adjust to the vocab
         program = -1 if track.is_drum else track.program
         if program in self.config.use_note_duration_programs:
             if not self._note_on_off and ticks_per_beat is not None:
                 self._adjust_durations(note_soa, ticks_per_beat)
+                if hr and dx:
+                    self._adjust_durations(note_hr, high_res_ticks_per_beat)
             elif resampling_factors is not None:
                 note_soa["duration"] = self._adjust_time_to_tpb(
                     note_soa["duration"], resampling_factors, min_duration
@@ -703,6 +826,13 @@ class MusicTokenizer(ABC, HFHubMixin):
                 self._adjust_offset_spanning_across_time_sig(
                     note_soa, resampling_factors
                 )
+                if hr and dx:
+                    note_hr["duration"] = self._adjust_time_to_tpb(
+                        note_hr["duration"], high_res_resampling_factors, min_duration
+                    )
+                    self._adjust_offset_spanning_across_time_sig(
+                        note_hr, high_res_resampling_factors
+                    )
 
         # Symusic automatically sorts the notes by (time, duration, pitch) keys when
         # reading a music file. We hence don't need to sort the notes.
@@ -723,6 +853,16 @@ class MusicTokenizer(ABC, HFHubMixin):
             remove_duplicated_notes(notes_new)
 
         track.notes = notes_new
+
+        if hr:
+            hr_notes_new = Note.from_numpy(**note_hr)
+
+            if self.config.remove_duplicated_notes:
+                # we need to resort here, as symusic does it by (time, duration, pitch).
+                hr_notes_new.sort(key=lambda n: (n.time, n.pitch, n.duration, n.velocity))
+                remove_duplicated_notes(hr_notes_new)
+
+            high_res_track.notes = hr_notes_new
 
     def _preprocess_tempos(
         self,
@@ -1109,6 +1249,7 @@ class MusicTokenizer(ABC, HFHubMixin):
         score: Score,
         attribute_controls_indexes: Mapping[int, Mapping[int, Sequence[int] | bool]]
         | None = None,
+        hr_score: Score = None,
     ) -> TokSequence | list[TokSequence]:
         r"""
         Convert a **preprocessed** ``symusic.Score`` object to a sequence of tokens.
@@ -1169,6 +1310,12 @@ class MusicTokenizer(ABC, HFHubMixin):
         ticks_bars = get_bars_ticks(score, only_notes_onsets=True)
         ticks_beats = get_beats_ticks(score, only_notes_onsets=True)
         for ti, track in enumerate(score.tracks):
+            if hr_score is not None:
+                hr_track = hr_score.tracks[ti]
+                hr_resampling_factor = hr_score.tpq / score.tpq
+            else:
+                hr_track = None
+                hr_resampling_factor = None
             track_events = self._create_track_events(
                 track,
                 ticks_per_beat,
@@ -1176,6 +1323,8 @@ class MusicTokenizer(ABC, HFHubMixin):
                 ticks_bars,
                 ticks_beats,
                 attribute_controls_indexes.get(ti, None),
+                hr_track,
+                hr_resampling_factor,
             )
             if self.config.one_token_stream_for_programs:
                 all_events += track_events
@@ -1237,6 +1386,8 @@ class MusicTokenizer(ABC, HFHubMixin):
         ticks_bars: Sequence[int],
         ticks_beats: Sequence[int],
         attribute_controls_indexes: Mapping[int, Sequence[int] | bool] | None = None,
+        hr_track: Track = None,
+        hr_resampling_factor: int = None,
     ) -> list[Event]:
         r"""
         Extract the tokens/events from a track (``symusic.Track``).
@@ -1267,6 +1418,9 @@ class MusicTokenizer(ABC, HFHubMixin):
             learn to generate tokens accordingly to the attribute controls.
         :return: sequence of corresponding ``Event``s.
         """
+        hr = (hr_track is not None) 
+        if hr:
+            assert hr_resampling_factor is not None
         program = track.program if not track.is_drum else -1
         use_durations = program in self.config.use_note_duration_programs
         events = []
@@ -1368,7 +1522,9 @@ class MusicTokenizer(ABC, HFHubMixin):
 
         # Creates the Note On, Note Off and Velocity events
         tpb_idx = 0
-        for note in track.notes:
+        for ni, note in enumerate(track.notes):
+            if hr:
+                hr_note = hr_track.notes[ni]
             # Program
             if self.config.use_programs and not self.config.program_changes:
                 events.append(
@@ -1432,6 +1588,10 @@ class MusicTokenizer(ABC, HFHubMixin):
 
             # Pitch / NoteOn
             if add_absolute_pitch_token:
+                if hr:
+                    delta = hr_note.start - round(hr_resampling_factor * note.time)
+                else:
+                    delta = 0
                 if self.config.use_pitchdrum_tokens and track.is_drum:
                     note_token_name = "DrumOn" if self._note_on_off else "PitchDrum"
                 else:
@@ -1443,6 +1603,7 @@ class MusicTokenizer(ABC, HFHubMixin):
                         time=note.start,
                         program=program,
                         desc=note.end,
+                        delta=delta
                     )
                 )
 
@@ -1638,12 +1799,16 @@ class MusicTokenizer(ABC, HFHubMixin):
 
         # Preprocess the music file
         if not no_preprocess_score:
-            score = self.preprocess_score(score)
+            if self.config.use_microtiming:
+                #self.high_res_score = self.preprocess_score(score, micro_resample=True)
+                #self.high_res_score = score.resample(score.ticks_per_quarter // self.config.max_microtime_depth)
+                self.init_high_resolution(score)
+            score, hr_score = self.preprocess_score(score)
 
         # Tokenize it
-        tokens = self._score_to_tokens(score, attribute_controls_indexes)
+        tokens = self._score_to_tokens(score, attribute_controls_indexes, hr_score)
         # Add bar/beat ticks here to TokSeq as they need to be from preprocessed Score
-        add_bar_beats_ticks_to_tokseq(tokens, score)
+        add_bar_beats_ticks_to_tokseq(tokens, score, hr_score)
 
         # Encode the ids if the tokenizer is trained
         if encode_ids and self.is_trained:
@@ -2056,6 +2221,10 @@ class MusicTokenizer(ABC, HFHubMixin):
                 for duration in self.durations
             ]
 
+        # Microtiming
+        if self.config.use_microtiming:
+            vocab += [f"Delta_{i}" for i in self.microtimes]
+
     def _add_additional_tokens_to_vocab_list(self, vocab: list[str]) -> None:
         # PitchInterval
         if self.config.use_pitch_intervals:
@@ -2327,7 +2496,7 @@ class MusicTokenizer(ABC, HFHubMixin):
         del durations[0]  # removes duration of 0
         return durations
 
-    def __create_tpb_per_ts(self) -> dict[int, int]:
+    def __create_tpb_per_ts(self, max_num_pos_per_beat: int) -> dict[int, int]:
         """
         Return the dictionary of the possible ticks per beat values per time signature.
 
@@ -2340,7 +2509,7 @@ class MusicTokenizer(ABC, HFHubMixin):
         """
         max_denom = max(ts[1] for ts in self.time_signatures)
         return {
-            denom: self.config.max_num_pos_per_beat * (max_denom // denom)
+            denom: max_num_pos_per_beat * (max_denom // denom)
             for denom in self.config.time_signature_range
         }
 

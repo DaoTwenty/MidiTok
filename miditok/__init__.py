@@ -11,6 +11,7 @@ from .midi_tokenizer import MusicTokenizer
 from .tokenizations import (
     MMM,
     REMI,
+    MIREX,
     TSD,
     CPWord,
     MIDILike,
@@ -28,6 +29,7 @@ __all__ = [
     "TokTrainingIterator",
     "MIDILike",
     "REMI",
+    "MIREX",
     "TSD",
     "Structured",
     "Octuple",

@@ -233,7 +233,7 @@ def adapt_ref_score_for_tests_assertion(
     tokenization = type(tokenizer).__name__ if tokenizer is not None else None
 
     # Preprocess the Score: downsample it, remove notes outside of pitch range...
-    score = tokenizer.preprocess_score(score)
+    score, hr_score = tokenizer.preprocess_score(score)
 
     # For Octuple, as tempo is only carried at notes times, we need to adapt
     # their times for comparison. Set tempo changes at onset times of notes.
@@ -434,6 +434,7 @@ def tokenize_and_check_equals(
     # Tokenize and detokenize
     adapt_ref_score_before_tokenize(score, tokenizer)
     tokens = tokenizer(score)
+    #print(tokens[0].tokens)
     score_decoded = tokenizer(tokens)
 
     # Post-process the reference and decoded Scores
@@ -468,6 +469,23 @@ def tokenize_and_check_equals(
         print(f"{log_prefix} Validation of tokens types / values successions failed")
 
     return score_decoded, score, not scores_equals
+
+def tokenize(
+    score: Score,
+    tokenizer: MusicTokenizer,
+    file_name: str,
+) -> tuple[Score, Score, bool]:
+    tokenization = type(tokenizer).__name__
+    log_prefix = f"{file_name} / {tokenization}"
+
+    # Tokenize and detokenize
+    adapt_ref_score_before_tokenize(score, tokenizer)
+    tokens = tokenizer(score)
+    #print(tokens[0].tokens)
+    score_decoded = tokenizer(tokens)
+
+    return score_decoded, score, tokens
+
 
 
 def del_invalid_time_sig(
