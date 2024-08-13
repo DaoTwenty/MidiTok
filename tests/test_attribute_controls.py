@@ -77,7 +77,7 @@ def test_controller_controls_computation(
         tokenizer_config=miditok.TokenizerConfig(**tokenizer_params)
     )
     score = Score(file_path)
-    score = tokenizer.preprocess_score(score)
+    score, hr_score = tokenizer.preprocess_score(score)
 
     # Set attribute controls indexes
     seed(SEED)
@@ -92,7 +92,7 @@ def test_controller_controls_computation(
 
     # Tokenize Score with attribute controls injected
     tokens = tokenizer.encode(
-        score, no_preprocess_score=True, attribute_controls_indexes=ac_indexes
+        score, no_preprocess_score=True, attribute_controls_indexes=ac_indexes, hr_score = hr_score
     )
 
     # Check for errors

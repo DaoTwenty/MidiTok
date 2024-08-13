@@ -1752,6 +1752,7 @@ class MusicTokenizer(ABC, HFHubMixin):
         encode_ids: bool = True,
         no_preprocess_score: bool = False,
         attribute_controls_indexes: Mapping[int, Mapping[int, Sequence[int] | bool]]
+        hr_score: Score = None,
         | None = None,
     ) -> TokSequence | list[TokSequence]:
         r"""

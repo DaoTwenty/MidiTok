@@ -240,7 +240,7 @@ class DatasetMIDI(_DatasetABC):
 
     def _tokenize_score(self, score: Score) -> TokSequence | list[TokSequence]:
         # Preprocess the music file
-        score = self.tokenizer.preprocess_score(score)
+        score, hr_score = self.tokenizer.preprocess_score(score)
 
         # Randomly create attribute controls indexes
         ac_indexes = None
@@ -257,6 +257,7 @@ class DatasetMIDI(_DatasetABC):
             score,
             no_preprocess_score=True,
             attribute_controls_indexes=ac_indexes,
+            hr_score = hr_score
         )
 
         # If tokenizing on the fly a multi-stream tokenizer, only keeps the first track

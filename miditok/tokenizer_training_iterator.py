@@ -66,7 +66,7 @@ class TokTrainingIterator:
             return []
 
         # Preprocess first to already have the appropriate tracks idx in case of deletes
-        score = self.tokenizer.preprocess_score(score)
+        score, hr_score = self.tokenizer.preprocess_score(score)
 
         # Randomly create attribute controls indexes
         ac_indexes = None
@@ -85,6 +85,7 @@ class TokTrainingIterator:
         # Need to specify `encode_ids=False` as it might be already pretrained
         # For MMM, we make sure to have sequences separated per track
         kwargs = {}
+        kwargs["hr_score"] = hr_score
         # can't use isinstance because of circular import
         if type(self.tokenizer).__name__ == "MMM":
             kwargs["concatenate_track_sequences"] = False

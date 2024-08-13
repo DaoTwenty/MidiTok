@@ -37,8 +37,8 @@ def test_preprocess(tokenization: str, file_path: Path):
 
     # Preprocess original file, and once again on the already preprocessed file
     score = Score(file_path)
-    score_processed1 = tokenizer.preprocess_score(score)
-    score_processed2 = tokenizer.preprocess_score(score_processed1)
+    score_processed1, hr_score1 = tokenizer.preprocess_score(score)
+    score_processed2, hr_score2 = tokenizer.preprocess_score(score_processed1)
 
     # The second preprocess shouldn't do anything
     assert score_processed1 == score_processed2
