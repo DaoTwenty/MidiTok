@@ -141,7 +141,7 @@ AC_REPETITION_TRACK_NUM_BINS = 10
 
 
 # Tokenizers specific parameters
-MMM_COMPATIBLE_TOKENIZERS = {"TSD", "REMI", "MIDILike"}
+MMM_COMPATIBLE_TOKENIZERS = {"TSD", "REMI", "MIDILike", "MIREX"}
 USE_BAR_END_TOKENS = False  # REMI
 
 # Defaults values when writing new files
