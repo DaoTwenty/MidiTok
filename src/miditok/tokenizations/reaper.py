@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from math import ceil
+import numpy as np
+
 from symusic import (
     Note,
     Pedal,
@@ -20,18 +23,33 @@ from miditok.constants import (
     DEFAULT_VELOCITY,
     MIDI_INSTRUMENTS,
     TIME_SIGNATURE,
-    USE_BAR_END_TOKENS,
+    QUARTER_NOTE_RES,
+    MICROTIMING_FACTOR,
+    USE_MICROTIMING_REAPER,
 )
+
+from miditok.attribute_controls import (
+    BarAttributeControl,
+)
+
+from miditok.utils import (
+    compute_ticks_per_bar,
+    compute_ticks_per_beat,
+)
+
 from miditok.midi_tokenizer import MusicTokenizer
-from miditok.utils import compute_ticks_per_bar, compute_ticks_per_beat
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
     from pathlib import Path
+
+    from numpy.typing import NDArray
+
+    from symusic.score import TimeSignatureTickList
 
 from miditok.tokenizations import REMI
 
-class REAP(REMI):
+class REAPER(REMI):
 
     r"""
     
@@ -49,6 +67,7 @@ class REAP(REMI):
     New TokenizerConfig Options:
 
     * microtiming_factor: indicates the factor of added resolution with the *Delta* tokens
+    * quarter_note_res: replaces beat_res, resolution is relative to quarter-notes
     
     **Note:** To achieve the tokenization from the paper, this class must be used within
     the MMM tokenization.
@@ -60,6 +79,7 @@ class REAP(REMI):
         | - use_bar_end_tokens -- if set will add Bar_End tokens at the end of each Bar;
         | - add_trailing_bars -- will add tokens for trailing empty Bars, if they are
         | - microtiming_factor -- factor of added resolution with the *Delta* tokens
+        | - quarter_note_res -- positions per quarter-note
         present in source symbolic music data. Applicable to :ref:`REAPer`. This flag is
         very useful in applications where we need bijection between Bars is source and
         tokenized representations, same lengths, anacrusis detection etc.
@@ -79,20 +99,170 @@ class REAP(REMI):
         max_bar_embedding: int | None = None,
         params: str | Path | None = None,
     ) -> None:
+        
         super().__init__(tokenizer_config, max_bar_embedding, params)
-        if "use_microtiming" not in self.config.additional_params:
-            msg = "Tokenizer config must have a value for use_microtiming"
-            raise ValueError(msg)
-        if "microtiming_factor" not in self.config.additional_params:
-            msg = "Tokenizer config must have a value for microtiming_factor"
-            raise ValueError(msg)
-        self.use_microtiming = bool(self.config.additional_params["use_microtiming"])
-        self.df = int(self.config.additional_params["microtiming_factor"])
 
-        # Workaround to not downsample and loose microtiming information
-        # Resampling is done later when time events are added
-        for range, res in self.config.beat_res.items():
-            self.config.beat_res[range] = self.df * res
+        if self.use_microtiming:
+            self._tpb_per_ts = self.__create_tpb_per_ts()
+            self._tpb_to_time_array = self.__create_tpb_to_ticks_array()
+            self._tpb_tokens_to_ticks = self.__create_tpb_tokens_to_ticks()
+            self._tpb_ticks_to_tokens = self.__create_tpb_ticks_to_tokens()
+
+    # Methods to override base MusicTokenizer versions
+    # To handle MicroTiming and multiple beat_res resolutions
+    # This is accomplished by removing the downsampling methods
+    # As a result, many time-based methods need to be redesigned
+
+    def _tweak_config_before_creating_voc(self) -> None:
+        super()._tweak_config_before_creating_voc()
+
+        if "use_microtiming" not in self.config.additional_params:
+            self.config.additional_params["use_microtiming"] = USE_MICROTIMING_REAPER
+        if "microtiming_factor" not in self.config.additional_params:
+            self.config.additional_params["microtiming_factor"] = MICROTIMING_FACTOR
+        if "quarter_note_res" not in self.config.additional_params:
+            self.config.additional_params["quarter_note_res"] = QUARTER_NOTE_RES
+        if "dur_quarter_note_res" not in self.config.additional_params:
+            res = self.config.additional_params["quarter_note_res"]
+            self.config.additional_params["dur_quarter_note_res"] = res
+
+        self.use_microtiming = self.config.additional_params["use_microtiming"]
+        self.delta_factor = self.config.additional_params["microtiming_factor"]
+
+        # We don't need these, may change later
+        self.config.use_chords = False
+        self.config.use_pitch_bends = False
+        self.config.use_pitch_intervals = False
+        self.config.use_sustain_pedals = False
+        self.config.use_rests = False
+
+    @property
+    def longest_ts_qn(self) ->tuple[int]:
+        """
+        Returns the longest time signature in quarter-notes.
+
+        :return: longest time signature in quarter-notes.
+        """
+        ts_lengths = np.array([ts[0]/ts[1] for ts in self.time_signatures])
+        return self.time_signatures[np.argmax(ts_lengths)]
+
+    @property
+    def max_quarter_notes(self) -> int:
+        """
+        Returns the maximum number of quarter-note per bar.
+
+        :return: maximum number of quarter-note per bar.
+        """
+        longest_ts = self.longest_ts_qn
+        return ceil(4 * longest_ts[0]/longest_ts[1])
+
+    @property
+    def res_pos(self) -> int:
+        """
+        Returns the maximum number of positions per quarter-note covered by the config.
+
+        :return: maximum number of positions per quarter-note covered by the config.
+        """
+        return max(self.config.additional_params["quarter_note_res"].values())
+    
+    @property
+    def res_dur(self) -> int:
+        """
+        Returns the maximum number of durations per quarter-note covered by the config.
+
+        :return: maximum number of durations per quarter-note covered by the config.
+        """
+        return max(self.config.additional_params["dur_quarter_note_res"].values())
+
+    @property
+    def tpq(self) -> int:
+        """
+        Returns the resolution at which score is resampled. 
+        Is also resolution of *Delta* tokens.
+
+        :return: resampling resolution.
+        """
+        return self.delta_factor * self.res_pos
+    
+    @property
+    def max_pos(self) -> int:
+        """
+        Returns the max *Position* value.
+
+        :return: max position token value.
+        """
+        return self.res_pos * self.max_quarter_notes
+    
+    @property
+    def max_dur(self) -> int:
+        """
+        Returns the max *Duration* value.
+
+        :return: max duration token value.
+        """
+        return self.res_dur * self.max_quarter_notes
+    
+    @property
+    def delta_range(self) -> int:
+        """
+        Returns the max range of *Delta* tokens
+
+        :return: range of the microtiming tokens
+        """
+        return self.delta_factor // 2 + 1
+
+    def _resample_score(
+        self, score: Score, _new_tpq: int, _time_signatures_copy: TimeSignatureTickList
+    ) -> Score:
+        tpq_to_resample = _new_tpq
+        if self.use_microtiming:
+            tpq_to_resample = self.tpq
+
+        return super()._resample_score(
+            score, 
+            tpq_to_resample,
+            _time_signatures_copy
+        )
+    
+    # For position token value, we want to round to the nearest integer,
+    # not round to the integer closest to zero.
+    # Because we may be rounding up at the last possible position, therefore
+    # rounding to what sould be Position_0 of the next bar, we max at max_pos
+    
+    def _units_between_pos(
+            self, 
+            start_tick: int, 
+            end_tick: int, 
+            ticks_per_unit: int
+        ) -> int:
+        return min(
+                    int((end_tick - start_tick) / ticks_per_unit + 0.5), 
+                    self.max_pos
+                )
+    
+    def _units_dur(self, duration_tick: int, ticks_per_unit: int) -> int:
+        return max(
+            1,
+            min(
+                int(duration_tick / ticks_per_unit + 0.5), 
+                self.max_dur - 1
+            )
+        )
+    
+    def _create_duration_event(
+        self, note: Note, _program: int, _ticks_per_pos: np.ndarray
+    ) -> Event:
+        dur = self._units_dur(
+            note.duration,
+            _ticks_per_pos
+        )
+        return Event(
+            type_="Duration",
+            value=dur,
+            time=note.start,
+            program=_program,
+            desc=f"{note.duration} ticks",
+        )
 
     def _add_position_event(
         self,
@@ -101,10 +271,10 @@ class REAP(REMI):
         tick_at_current_bar: int,
         ticks_per_pos: int,
     ) -> None:
-        pos_index = self._units_between(
-            tick_at_current_bar // self.df, 
-            event.time // self.df,
-            ticks_per_pos // self.df
+        pos_index = self._units_between_pos(
+            tick_at_current_bar, 
+            event.time,
+            ticks_per_pos 
         )
         all_events.append(
             Event(
@@ -116,35 +286,124 @@ class REAP(REMI):
         )
 
         if self.use_microtiming:
-            self._add_delta_event(event, all_events, tick_at_current_bar, ticks_per_pos)
+            self._add_delta_event(
+                event,
+                event.time - tick_at_current_bar, 
+                pos_index * ticks_per_pos, 
+                all_events
+            )
         
     def _add_delta_event(
         self,
         event: Event,
+        tick_event: int,
+        tick_pos: int,
         all_events: list[Event],
-        tick_at_current_bar: int,
-        ticks_per_pos: int,
     ) -> None:
-        pos_index = self._units_between(tick_at_current_bar, event.time, ticks_per_pos)
-        pos_index_time = pos_index * ticks_per_pos
-        delta = pos_index_time - event.time
-        if delta < 0:
+        delta = tick_event - tick_pos
+        if delta !=0:
+            if delta < 0:
+                all_events.append(
+                    Event(
+                        type_="DeltaDirection",
+                        value=0,
+                        time=event.time,
+                        desc=event.time,
+                    )
+                )
             all_events.append(
                 Event(
-                    type_="DeltaDirection",
-                    value=0,
+                    type_="Delta",
+                    value=min(abs(delta),self.delta_range),
                     time=event.time,
                     desc=event.time,
                 )
             )
-        all_events.append(
-            Event(
-                type_="Delta",
-                value=abs(delta),
-                time=event.time,
-                desc=event.time,
+
+    def __create_tpb_per_ts(self) -> dict[int, int]:
+        """
+        Return the dictionary of the possible ticks per beat values per time signature.
+
+        The set of possible values depends on the tokenizer's maximum number of
+        positions per beat (`self.config.max_num_pos_per_beat`) and the time signatures
+        it supports.
+
+        :return: dictionary of the possible ticks per beat values per time signature,
+            keys are time signature denominators, values the ticks/beat values.
+        """
+        max_denom = max(ts[1] for ts in self.time_signatures)
+        return {
+            denom: self.delta_factor * self.config.max_num_pos_per_beat * (max_denom // denom)
+            for denom in self.config.time_signature_range
+        }
+    
+    def __create_tpb_to_ticks_array(self, rest: bool = False) -> dict[int, np.ndarray]:
+        r"""
+        Create arrays of the times in ticks of the time tokens of the vocabulary.
+
+        These time values following the ticks/beat value, which depends on the time
+        signature.
+
+        The arrays are used during tokenization to efficiently find the closest values.
+
+        :param rest: will use rest values if given ``True``, otherwise durations.
+            (default: ``False``)
+        :return: dictionary of the durations in tick depending on the ticks per beat
+            resolution.
+        """
+        values = self.rests if rest else self.durations
+        return {
+            tpb: np.array(
+                [self._time_token_to_ticks(time_tuple, tpb) for time_tuple in values],
+                dtype=np.intc,
             )
-        )
+            for tpb in self._tpb_per_ts.values()
+        }
+    
+    def __create_tpb_ticks_to_tokens(self) -> dict[int, dict[int, str]]:
+        r"""
+        Create the correspondences between times in tick and token value (str).
+
+        These correspondences vary following the ticks/beat value, which depends on the
+        time signature.
+
+        The returned dictionary is used during tokenization to get the values of
+        *Duration*/*TimeShift*/*Rest* tokens while taking the time signature into
+        account.
+
+        :return: ticks per beat + duration in ticks to token value.
+        """
+        return {
+            tpb: {v: k for k, v in tokens_to_ticks.items()}
+            for tpb, tokens_to_ticks in self._tpb_tokens_to_ticks.items()
+        }
+    
+    def __create_tpb_tokens_to_ticks(
+        self, rest: bool = False
+    ) -> dict[int, dict[str, int]]:
+        r"""
+        Create the correspondences between times in tick and token value (str).
+
+        These correspondences vary following the ticks/beat value, which depends on the
+        time signature.
+
+        The returned dictionary is used when decoding *Duration*/*TimeShift*/*Rest*
+        tokens while taking the time signature into account.
+
+        :param rest: will use rest values if given ``True``, otherwise durations.
+            (default: ``False``)
+        :return: ticks per beat + token value to duration in tick.
+        """
+        values = self.rests if rest else self.durations
+        return {
+            tpb: {
+                ".".join(map(str, duration_tuple)): self._time_token_to_ticks(
+                    duration_tuple, tpb
+                )
+                for duration_tuple in values
+            }
+            for tpb in self._tpb_per_ts.values()
+        }
 
     def _create_base_vocabulary(self) -> list[str]:
         r"""
@@ -162,27 +421,62 @@ class REAP(REMI):
 
         :return: the vocabulary as a list of string.
         """
-        vocab = super()._create_base_vocabulary()
+        vocab = []
+
+        # Bar
+        if self.config.additional_params["max_bar_embedding"] is not None:
+            vocab += [
+                f"Bar_{i}"
+                for i in range(self.config.additional_params["max_bar_embedding"])
+            ]
+        else:
+            vocab += ["Bar_None"]
+        if self.config.additional_params["use_bar_end_tokens"]:
+            vocab.append("Bar_End")
+
+        # NoteOn/NoteOff/Velocity
+        self._add_note_tokens_to_vocab_list(vocab)
+
+        # Position
+        # self.time_division is equal to the maximum possible ticks/beat value.
+        vocab += [f"Position_{i}" for i in range(self.max_pos)]
+
+        # Add additional tokens
+        self._add_additional_tokens_to_vocab_list(vocab)
         
         if not self.use_microtiming:
             return vocab
         
         # Microtiming
         vocab += [
-            f"Delta_{i}" for i in range(1,self.delta_range)
+            f"Delta_{i}" for i in range(1,self.delta_range+1)
         ]
         vocab.append("DeltaDirection_0")
 
         return vocab
+    
+    def _add_note_tokens_to_vocab_list(self, vocab: list[str]) -> None:
+        # NoteOn + NoteOff
+        if self._note_on_off:
+            vocab += [f"NoteOn_{i}" for i in range(*self.config.pitch_range)]
+            if len(self.config.use_note_duration_programs) > 0:
+                vocab += [f"NoteOff_{i}" for i in range(*self.config.pitch_range)]
+        # Pitch + Duration (later done after velocity)
+        else:
+            vocab += [f"Pitch_{i}" for i in range(*self.config.pitch_range)]
 
-    @property
-    def delta_range(self) -> list[int]:
-        """
-        Returns the max range of *Delta* tokens
+        # Velocity
+        if self.config.use_velocities:
+            vocab += [f"Velocity_{i}" for i in self.velocities]
 
-        :return: range of the microtiming tokens
-        """
-        return self.config.max_num_pos_per_beat
+        # Duration
+        if (
+            not self._note_on_off and self.config.using_note_duration_tokens
+        ) or self.config.sustain_pedal_duration:
+            vocab += [
+                f"Duration_{duration}"
+                for duration in range(1, self.max_dur)
+            ]
     
     def _create_token_types_graph(self) -> dict[str, set[str]]:
         r"""
@@ -201,6 +495,132 @@ class REAP(REMI):
         dic["DeltaPosition"] = {"Delta"}
 
         return dic
+    
+    def _compute_ticks_per_units(
+        self, time: int, current_time_sig: Sequence[int], time_division: int
+    ) -> tuple[int, int, int]:
+        ticks_per_bar = compute_ticks_per_bar(
+            TimeSignature(time, *current_time_sig), time_division
+        )
+        ticks_per_beat = compute_ticks_per_beat(current_time_sig[1], time_division)
+        ticks_per_pos = time_division // self.res_pos
+        return ticks_per_bar, ticks_per_beat, ticks_per_pos
+    
+    def _add_time_events(self, events: list[Event], time_division: int) -> list[Event]:
+        r"""
+        Create the time events from a list of global and track events.
+
+        Internal method intended to be implemented by child classes.
+        The returned sequence is the final token sequence ready to be converted to ids
+        to be fed to a model.
+
+        :param events: sequence of global and track events to create tokens time from.
+        :param time_division: time division in ticks per quarter of the
+            ``symusic.Score`` being tokenized.
+        :return: the same events, with time events inserted.
+        """
+        # Add time events
+        all_events = []
+        current_bar = -1
+        bar_at_last_ts_change = 0
+        previous_tick = -1
+        previous_note_end = 0
+        tick_at_last_ts_change = tick_at_current_bar = 0
+
+        # Determine time signature and compute ticks per entites
+        current_time_sig, time_sig_time = TIME_SIGNATURE, 0
+
+        # First look for a TimeSig token, if any is given at tick 0, to update
+        # current_time_sig
+        if self.config.use_time_signatures:
+            for event in events:
+                # There should be a TimeSig token at tick 0
+                if event.type_ == "TimeSig":
+                    current_time_sig = self._parse_token_time_signature(event.value)
+                    time_sig_time = event.time
+                    break
+        ticks_per_bar, ticks_per_beat, ticks_per_pos = self._compute_ticks_per_units(
+            time_sig_time, current_time_sig, time_division
+        )
+        ticks_per_qn = time_division
+
+        # Add the time events
+        for ei, event in enumerate(events):
+            if event.type_.startswith("ACTrack"):
+                all_events.append(event)
+                continue
+            if event.time != previous_tick:
+                        
+                # Bar
+                current_bar, tick_at_current_bar = self._add_new_bars(
+                    event.time,
+                    event.type_,
+                    all_events,
+                    current_bar,
+                    bar_at_last_ts_change,
+                    tick_at_last_ts_change,
+                    tick_at_current_bar,
+                    current_time_sig,
+                    ticks_per_bar,
+                )
+
+                # Position
+                if event.type_ != "TimeSig" and not event.type_.startswith("ACBar"):
+                    self._add_position_event(
+                        event, all_events, tick_at_current_bar, ticks_per_pos
+                    )
+
+                previous_tick = event.time
+
+            # Update time signature time variables, after adjusting the time (above)
+            if event.type_ == "TimeSig":
+                bar_at_last_ts_change += self._units_between(
+                    tick_at_last_ts_change, event.time, ticks_per_bar
+                )
+                tick_at_last_ts_change = event.time
+                current_time_sig = self._parse_token_time_signature(event.value)
+                ticks_per_bar, ticks_per_beat, ticks_per_pos = (
+                    self._compute_ticks_per_units(
+                        event.time, current_time_sig, time_division
+                    )
+                )
+                # We decrease the previous tick so that a Position token is enforced
+                # for the next event
+                previous_tick -= 1
+
+            all_events.append(event)
+            # Adds a Position token if the current event is a bar-level attribute
+            # control and the next one is at the same position, as the position token
+            # wasn't added previously.
+            if (
+                event.type_.startswith("ACBar")
+                and not events[ei + 1].type_.startswith("ACBar")
+                and event.time == events[ei + 1].time
+            ):
+                self._add_position_event(
+                    event, all_events, tick_at_current_bar, ticks_per_pos
+                )
+
+            # Update max offset time of the notes encountered
+            previous_note_end = self._previous_note_end_update(event, previous_note_end)
+
+        if (
+            previous_note_end > previous_tick
+            and self.config.additional_params["add_trailing_bars"]
+        ):
+            # there are some trailing bars
+            _ = self._add_new_bars(
+                previous_note_end,
+                event.type_,
+                all_events,
+                current_bar,
+                bar_at_last_ts_change,
+                tick_at_last_ts_change,
+                tick_at_current_bar,
+                current_time_sig,
+                ticks_per_bar,
+            )
+        return all_events
     
     def _tokens_to_score(
         self,
@@ -224,7 +644,7 @@ class REAP(REMI):
             tokens = [tokens]
         for i, tokens_i in enumerate(tokens):
             tokens[i] = tokens_i.tokens
-        score = Score(self.time_division)
+        score = Score(self.tpq)
         dur_offset = 2 if self.config.use_velocities else 1
 
         # RESULTS
@@ -273,20 +693,17 @@ class REAP(REMI):
             ticks_per_bar = compute_ticks_per_bar(
                 current_time_sig, score.ticks_per_quarter
             )
-            ticks_per_beat = self._tpb_per_ts[current_time_sig.denominator]
-            ticks_per_pos = self._compute_ticks_per_pos(ticks_per_beat)
+            ticks_per_pos = self.delta_factor
+            ticks_per_dur = self.tpq // self.res_dur
 
             # Set tracking variables
-            current_tick = tick_at_last_ts_change = tick_at_current_bar = 0
+            current_tick = tick_at_current_bar = 0
             current_bar = -1
-            bar_at_last_ts_change = 0
             current_program = 0
             previous_note_end = 0
             current_delta_direction = 1
             previous_pitch_onset = {prog: -128 for prog in self.config.programs}
             previous_pitch_chord = {prog: -128 for prog in self.config.programs}
-            active_pedals = {}
-
             # Set track / sequence program if needed
             if not self.config.one_token_stream_for_programs:
                 is_drum = False
@@ -319,21 +736,6 @@ class REAP(REMI):
                     if current_bar > 0:
                         current_tick = tick_at_current_bar + ticks_per_bar
                     tick_at_current_bar = current_tick
-                elif tok_type == "Rest":
-                    current_tick = max(previous_note_end, current_tick)
-                    current_tick += self._tpb_rests_to_ticks[ticks_per_beat][tok_val]
-                    real_current_bar = bar_at_last_ts_change + self._units_between(
-                        tick_at_last_ts_change, current_tick, ticks_per_bar
-                    )
-                    if real_current_bar > current_bar:
-                        # In case we instantly begin with a Rest,
-                        # we need to update current_bar
-                        if current_bar == -1:
-                            current_bar = 0
-                        tick_at_current_bar += (
-                            real_current_bar - current_bar
-                        ) * ticks_per_bar
-                        current_bar = real_current_bar
                 elif tok_type == "Position":
                     if current_bar == -1:
                         # as this Position token occurs before any Bar token
@@ -380,11 +782,10 @@ class REAP(REMI):
                         else:
                             dur_type = "Duration"
                             dur = int(
-                                self.config.default_note_duration * ticks_per_beat
+                                self.config.default_note_duration * self.tpq
                             )
                         if vel_type == "Velocity" and dur_type == "Duration":
-                            if isinstance(dur, str):
-                                dur = self._tpb_tokens_to_ticks[ticks_per_beat][dur]
+                            dur = int(dur) * ticks_per_dur
                             new_note = Note(
                                 current_tick,
                                 dur,
@@ -431,54 +832,11 @@ class REAP(REMI):
                         current_time_sig = TimeSignature(current_tick, num, den)
                         if si == 0:
                             time_signature_changes.append(current_time_sig)
-                        tick_at_last_ts_change = tick_at_current_bar  # == current_tick
-                        bar_at_last_ts_change = current_bar
                         ticks_per_bar = compute_ticks_per_bar(
                             current_time_sig, score.ticks_per_quarter
                         )
-                        ticks_per_beat = self._tpb_per_ts[den]
-                        ticks_per_pos = self._compute_ticks_per_pos(ticks_per_beat)
-                elif tok_type == "Pedal":
-                    pedal_prog = (
-                        int(tok_val) if self.config.use_programs else current_program
-                    )
-                    if self.config.sustain_pedal_duration and ti + 1 < len(seq):
-                        if seq[ti + 1].split("_")[0] == "Duration":
-                            duration = self._tpb_tokens_to_ticks[ticks_per_beat][
-                                seq[ti + 1].split("_")[1]
-                            ]
-                            # Add instrument if it doesn't exist, can happen for the
-                            # first tokens
-                            new_pedal = Pedal(current_tick, duration)
-                            if self.config.one_token_stream_for_programs:
-                                check_inst(pedal_prog)
-                                tracks[pedal_prog].pedals.append(new_pedal)
-                            else:
-                                current_track.pedals.append(new_pedal)
-                    elif pedal_prog not in active_pedals:
-                        active_pedals[pedal_prog] = current_tick
-                elif tok_type == "PedalOff":
-                    pedal_prog = (
-                        int(tok_val) if self.config.use_programs else current_program
-                    )
-                    if pedal_prog in active_pedals:
-                        new_pedal = Pedal(
-                            active_pedals[pedal_prog],
-                            current_tick - active_pedals[pedal_prog],
-                        )
-                        if self.config.one_token_stream_for_programs:
-                            check_inst(pedal_prog)
-                            tracks[pedal_prog].pedals.append(new_pedal)
-                        else:
-                            current_track.pedals.append(new_pedal)
-                        del active_pedals[pedal_prog]
-                elif tok_type == "PitchBend":
-                    new_pitch_bend = PitchBend(current_tick, int(tok_val))
-                    if self.config.one_token_stream_for_programs:
-                        check_inst(current_program)
-                        tracks[current_program].pitch_bends.append(new_pitch_bend)
-                    else:
-                        current_track.pitch_bends.append(new_pitch_bend)
+                        ticks_per_pos = self.delta_factor
+                        ticks_per_dur = self.tpq // self.res_dur
 
             # Add current_inst to score and handle notes still active
             if not self.config.one_token_stream_for_programs and not is_track_empty(
@@ -493,3 +851,120 @@ class REAP(REMI):
         score.time_signatures = time_signature_changes
 
         return score
+    
+    def _create_track_events(
+        self,
+        track: Track,
+        ticks_per_beat: np.ndarray,
+        time_division: int,
+        ticks_bars: Sequence[int],
+        ticks_beats: Sequence[int],
+        attribute_controls_indexes: Mapping[int, Sequence[int] | bool] | None = None,
+    ) -> list[Event]:
+        r"""
+        Extract the tokens/events from a track (``symusic.Track``).
+
+        Concerned events are: *Pitch*, *Velocity*, *Duration*, *NoteOn*, *NoteOff* and
+        optionally *Chord*, *Pedal* and *PitchBend*.
+        **If the tokenizer is using pitch intervals, the notes must be sorted by time
+        then pitch values. This is done in**
+        :py:func:`miditok.MusicTokenizer.preprocess_score`.
+
+        :param track: ``symusic.Track`` to extract events from.
+        :param ticks_per_beat: array indicating the number of ticks per beat per
+            section. The numbers of ticks per beat depend on the time signatures of
+            the Score being parsed. The array has a shape ``(N,2)``, for ``N`` changes
+            of ticks per beat, and the second dimension representing the end tick of
+            each portion and the number of ticks per beat respectively.
+            This argument is not required if the tokenizer is not using *Duration*,
+            *PitchInterval* or *Chord* tokens. (default: ``None``)
+        :param time_division: time division in ticks per quarter note of the file.
+        :param ticks_bars: ticks indicating the beginning of each bar.
+        :param ticks_beats: ticks indicating the beginning of each beat.
+        :param attribute_controls_indexes: indices of the attribute controls to compute
+            This argument has to be provided as a dictionary mapping attribute control
+            indices (indexing ``tokenizer.attribute_controls``) to a sequence of
+            bar indexes if the AC is "bar-level" or anything if it is "track-level".
+            Its structure is as: ``{ac_idx: Any (track ac) | [bar_idx, ...] (bar ac)}``
+            This argument is meant to be used when training a model in order to make it
+            learn to generate tokens accordingly to the attribute controls.
+        :return: sequence of corresponding ``Event``s.
+        """
+        program = track.program if not track.is_drum else -1
+        use_durations = program in self.config.use_note_duration_programs
+        events = []
+        # max_time_interval is adjusted depending on the time signature denom / tpb
+        max_time_interval = 0
+        if self.config.use_pitch_intervals:
+            max_time_interval = (
+                ticks_per_beat[0, 1] * self.config.pitch_intervals_max_time_dist
+            )
+
+        # Attribute controls
+        if attribute_controls_indexes:
+            for ac_idx, tracks_bars_idx in attribute_controls_indexes.items():
+                if (
+                    isinstance(self.attribute_controls[ac_idx], BarAttributeControl)
+                    and len(tracks_bars_idx) == 0
+                ):
+                    continue
+                events += self.attribute_controls[ac_idx].compute(
+                    track,
+                    time_division,
+                    ticks_bars,
+                    ticks_beats,
+                    tracks_bars_idx,
+                )
+
+        # Creates the Note On, Note Off and Velocity events
+        tpb_idx = 0
+        for note in track.notes:
+            # Program
+            if self.config.use_programs and not self.config.program_changes:
+                events.append(
+                    Event(
+                        type_="Program",
+                        value=program,
+                        time=note.start,
+                        program=program,
+                        desc=note.end,
+                    )
+                )
+
+            if self.config.use_pitchdrum_tokens and track.is_drum:
+                note_token_name = "DrumOn" if self._note_on_off else "PitchDrum"
+            else:
+                note_token_name = "NoteOn" if self._note_on_off else "Pitch"
+            events.append(
+                Event(
+                    type_=note_token_name,
+                    value=note.pitch,
+                    time=note.start,
+                    program=program,
+                    desc=note.end,
+                )
+            )
+
+            # Velocity
+            if self.config.use_velocities:
+                events.append(
+                    Event(
+                        type_="Velocity",
+                        value=note.velocity,
+                        time=note.start,
+                        program=program,
+                        desc=f"{note.velocity}",
+                    )
+                )
+
+            # Duration / NoteOff
+            if use_durations:
+                events.append(
+                    self._create_duration_event(
+                        note=note,
+                        _program=program,
+                        _ticks_per_pos = time_division // self.res_dur
+                    )
+                )
+
+        return events

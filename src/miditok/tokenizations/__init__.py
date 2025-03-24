@@ -15,6 +15,7 @@ from .pertok import PerTok
 from .remi import REMI
 from .structured import Structured
 from .tsd import TSD
+from .reaper import REAPER
 
 __all__ = [
     "MIDILike",
@@ -26,4 +27,5 @@ __all__ = [
     "MuMIDI",
     "MMM",
     "PerTok",
+    "REAPER"
 ]

@@ -31,6 +31,7 @@ CHR_ID_START = 33
 # The recommended pitches for piano in the GM2 specs are from 21 to 108
 PITCH_RANGE = (21, 109)
 BEAT_RES = {(0, 4): 8, (4, 12): 4}  # samples per beat
+QUARTER_NOTE_RES = {(0, 4): 12, (4, 12): 4}
 # number of velocity bins, velocities values from 0 to 127 will be quantized
 NUM_VELOCITIES = 32
 # default special tokens
@@ -58,6 +59,10 @@ PITCH_INTERVALS_MAX_TIME_DIST = 1
 
 # Rest params
 BEAT_RES_REST = {(0, 1): 8, (1, 2): 4, (2, 12): 2}
+
+# Microtiming
+MICROTIMING_FACTOR = 160
+USE_MICROTIMING_REAPER = True
 
 # Chord params
 # "chord_unknown" specifies the range of number of notes that can form "unknown" chords
@@ -136,7 +141,7 @@ AC_REPETITION_TRACK_NUM_BINS = 10
 
 
 # Tokenizers specific parameters
-MMM_COMPATIBLE_TOKENIZERS = {"TSD", "REMI", "MIDILike"}
+MMM_COMPATIBLE_TOKENIZERS = {"TSD", "REMI", "REAPER", "MIDILike"}
 USE_BAR_END_TOKENS = False  # REMI
 ADD_TRAILING_BARS = False  # REMI
 
