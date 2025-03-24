@@ -265,7 +265,7 @@ class REAPER(REMI):
 
         :return: range of the microtiming tokens
         """
-        return self.delta_factor // 2 + 1
+        return self.delta_factor // 2
     
     @property
     def dur_delta_range(self) -> int:
@@ -274,7 +274,7 @@ class REAPER(REMI):
 
         :return: range of the duration microtiming tokens
         """
-        return self.dur_delta_factor // 2 + 1
+        return self.dur_delta_factor // 2
 
     def _resample_score(
         self, score: Score, _new_tpq: int, _time_signatures_copy: TimeSignatureTickList
@@ -383,7 +383,7 @@ class REAPER(REMI):
     ) -> None:
         delta = tick_event - tick_pos
         if delta !=0:
-            if delta < 0:
+            if delta < 0 and not self.signed_microtiming:
                 all_events.append(
                     Event(
                         type_="DeltaDirection",
@@ -392,10 +392,14 @@ class REAPER(REMI):
                         desc="Negative Delta",
                     )
                 )
+            if not self.signed_microtiming:
+                delta = min(abs(delta),self.delta_range)
+            else:
+                delta = max(min(delta,self.delta_range), -self.delta_range)
             all_events.append(
                 Event(
                     type_="Delta",
-                    value=min(abs(delta),self.delta_range),
+                    value=delta,
                     time=event.time,
                     desc=f"Delta {delta}",
                 )
@@ -412,16 +416,23 @@ class REAPER(REMI):
         delta_dir = None
         delta = (tick_event - tick_dur) // self.dur_to_pos_delta_factor * self.dur_to_pos_delta_factor
         if delta !=0:
-            if delta < 0:
+            print('raw',tick_event - tick_dur)
+            print('real', delta)
+            if delta < 0 and not self.signed_microtiming:
                 delta_dir = Event(
                     type_=f"{self.dur_delta_token}Direction",
                     value=0,
                     time=time,
                     desc="Negative Duration Delta",
                 )
+            if not self.signed_microtiming:
+                delta = min(abs(delta),self.dur_delta_range)
+            else:
+                delta = max(min(delta,self.dur_delta_range), -self.dur_delta_range)
+            print('tok', delta)
             delta_tok = Event(
                 type_=self.dur_delta_token,
-                value=min(abs(delta),self.delta_range),
+                value=delta,
                 time=time,
                 desc=f"Delta Duration {delta}",
             )
@@ -561,7 +572,7 @@ class REAPER(REMI):
         ]
         if self.signed_microtiming:
             vocab += [
-                f"Delta_{i}" for i in range(-self.delta_range,0)
+                f"Delta_{i}" for i in range(-self.delta_range-1,0)
             ]
         else:
             vocab.append("DeltaDirection_0")
@@ -572,7 +583,7 @@ class REAPER(REMI):
             ]
             if self.signed_microtiming:
                 vocab += [
-                    f"DurationDelta_{i}" for i in range(-self.dur_delta_range,0)
+                    f"DurationDelta_{i}" for i in range(-self.dur_delta_range-1,0)
                 ]
             else:
                 vocab.append("DurationDeltaDirection_0")
@@ -887,8 +898,7 @@ class REAPER(REMI):
                 elif tok_type == "DurationDeltaDirection" and not self.joint_microtiming:
                     current_dur_delta_direction = -1
                 elif tok_type == "DurationDelta" and not self.joint_microtiming:
-                    delta_tick = current_delta_direction * int(tok_val) * self.dur_to_pos_delta_factor
-                    current_tick += delta_tick
+                    dur_delta_tick = current_delta_direction * int(tok_val) * self.dur_to_pos_delta_factor
                 elif tok_type in {
                     "Pitch",
                     "PitchDrum",
