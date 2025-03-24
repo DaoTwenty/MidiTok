@@ -63,6 +63,9 @@ BEAT_RES_REST = {(0, 1): 8, (1, 2): 4, (2, 12): 2}
 # Microtiming
 MICROTIMING_FACTOR = 160
 USE_MICROTIMING_REAPER = True
+USE_DUR_MICROTIMING_REAPER = False
+SIGNED_MICROTIMING = False
+JOINT_MICROTIMING = False
 
 # Chord params
 # "chord_unknown" specifies the range of number of notes that can form "unknown" chords

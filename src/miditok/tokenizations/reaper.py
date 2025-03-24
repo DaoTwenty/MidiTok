@@ -9,8 +9,6 @@ import numpy as np
 
 from symusic import (
     Note,
-    Pedal,
-    PitchBend,
     Score,
     Tempo,
     TimeSignature,
@@ -26,6 +24,9 @@ from miditok.constants import (
     QUARTER_NOTE_RES,
     MICROTIMING_FACTOR,
     USE_MICROTIMING_REAPER,
+    USE_DUR_MICROTIMING_REAPER,
+    SIGNED_MICROTIMING,
+    JOINT_MICROTIMING,
 )
 
 from miditok.attribute_controls import (
@@ -40,7 +41,7 @@ from miditok.utils import (
 from miditok.midi_tokenizer import MusicTokenizer
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping, Sequence
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
 
     from numpy.typing import NDArray
@@ -64,10 +65,19 @@ class REAPER(REMI):
     time position and the downsampled *Postion* value, and *DeltaDirection* whose presence 
     indicated that the difference is negative.
 
+    Additionally, *Duration* encode time identtically to *Position* tokens. The resolution
+    for both these tokens is based on quarter-notes, and not beats like in REMI.
+
     New TokenizerConfig Options:
 
-    * microtiming_factor: indicates the factor of added resolution with the *Delta* tokens
+    * use_microtiming: indicates whether microtiming tokens are used for position
+    * dur_use_microtiming: indicates whether microtiming tokens are used for duration
+    * microtiming_factor: indicates the factor of added resolution with the positional microtiming tokens
+    * microtiming_factor: indicates the factor of added resolution with the durational microtiming tokens
     * quarter_note_res: replaces beat_res, resolution is relative to quarter-notes
+    * dur_quarter_note_res: same as quarter_note_res, but for durations
+    * signed_microtiming: if True, *Delta* values can be negative. If false, a direction token is use
+    * joint_microtiming: indicates if a singe *Delta* token is used for both position and duration
     
     **Note:** To achieve the tokenization from the paper, this class must be used within
     the MMM tokenization.
@@ -118,6 +128,8 @@ class REAPER(REMI):
 
         if "use_microtiming" not in self.config.additional_params:
             self.config.additional_params["use_microtiming"] = USE_MICROTIMING_REAPER
+        if "use_dur_microtiming" not in self.config.additional_params:
+            self.config.additional_params["use_dur_microtiming"] = USE_DUR_MICROTIMING_REAPER
         if "microtiming_factor" not in self.config.additional_params:
             self.config.additional_params["microtiming_factor"] = MICROTIMING_FACTOR
         if "quarter_note_res" not in self.config.additional_params:
@@ -125,9 +137,44 @@ class REAPER(REMI):
         if "dur_quarter_note_res" not in self.config.additional_params:
             res = self.config.additional_params["quarter_note_res"]
             self.config.additional_params["dur_quarter_note_res"] = res
+        if "dur_microtiming_factor" not in self.config.additional_params:
+            factor = self.config.additional_params["microtiming_factor"]
+            self.config.additional_params["dur_microtiming_factor"] = factor
+        if "signed_microtiming" not in self.config.additional_params:
+            self.config.additional_params["signed_microtiming"] = SIGNED_MICROTIMING
+        if "joint_microtiming" not in self.config.additional_params:
+            self.config.additional_params["joint_microtiming"] = JOINT_MICROTIMING
+        else:
+            pos_factor = self.config.additional_params["microtiming_factor"]
+            dur_factor = self.config.additional_params["dur_microtiming_factor"]
+            if (dur_factor > pos_factor) or (pos_factor % dur_factor != 0):
+                msg = """Positional microtiming factor must be divisible by 
+                    durational microtiming factor"""
+                raise ValueError(msg)
+        if (
+            self.res_dur > self.res_pos or 
+            self.res_pos % self.res_dur != 0
+        ):
+                msg = """note position resolution must me divisible
+                by the note duration resolution"""
+                raise ValueError(msg)
 
-        self.use_microtiming = self.config.additional_params["use_microtiming"]
+
+        self.use_microtiming = self.config.additional_params["use_microtiming"] 
+        self.use_dur_microtiming = self.config.additional_params["use_dur_microtiming"]
+        # Implementation requires positional microtiming in order to use 
+        # durational microtiming. This condition can be bypassed by removing
+        # the following line
+        self.use_dur_microtiming &= self.use_microtiming
         self.delta_factor = self.config.additional_params["microtiming_factor"]
+        self.dur_delta_factor = self.config.additional_params["dur_microtiming_factor"]
+        self.dur_to_pos_delta_factor = self.delta_factor // self.dur_delta_factor
+        self.signed_microtiming = self.config.additional_params["signed_microtiming"]
+        self.joint_microtiming = self.config.additional_params["joint_microtiming"]
+
+        self.dur_delta_token = "Delta"
+        if not self.joint_microtiming:
+            self.dur_delta_token = "DurationDelta"
 
         # We don't need these, may change later
         self.config.use_chords = False
@@ -185,6 +232,15 @@ class REAPER(REMI):
         return self.delta_factor * self.res_pos
     
     @property
+    def dur_tpq(self) -> int:
+        """
+        Returns the resolution of *DurationDelta* tokens.
+
+        :return: duration delta tokens resolution.
+        """
+        return self.dur_delta_factor * self.res_pos
+    
+    @property
     def max_pos(self) -> int:
         """
         Returns the max *Position* value.
@@ -210,6 +266,15 @@ class REAPER(REMI):
         :return: range of the microtiming tokens
         """
         return self.delta_factor // 2 + 1
+    
+    @property
+    def dur_delta_range(self) -> int:
+        """
+        Returns the max range of *DurationDelta* tokens
+
+        :return: range of the duration microtiming tokens
+        """
+        return self.dur_delta_factor // 2 + 1
 
     def _resample_score(
         self, score: Score, _new_tpq: int, _time_signatures_copy: TimeSignatureTickList
@@ -251,18 +316,34 @@ class REAPER(REMI):
     
     def _create_duration_event(
         self, note: Note, _program: int, _ticks_per_pos: np.ndarray
-    ) -> Event:
+    ) -> list[Event]:
+        res = []
         dur = self._units_dur(
             note.duration,
             _ticks_per_pos
         )
-        return Event(
-            type_="Duration",
-            value=dur,
-            time=note.start,
-            program=_program,
-            desc=f"{note.duration} ticks",
+        res.append(Event(
+                type_="Duration",
+                value=dur,
+                time=note.start,
+                program=_program,
+                desc=f"{note.duration} ticks",
+            )
         )
+        if not self.use_dur_microtiming:
+            return res
+        
+        delta_dir, delta_tok = self._create_dur_delta_event(
+            note.start,
+            note.duration,
+            dur * _ticks_per_pos
+        )
+        if delta_dir:
+            res.append(delta_dir)
+        if delta_tok:
+            res.append(delta_tok)
+        
+        return res
 
     def _add_position_event(
         self,
@@ -308,7 +389,7 @@ class REAPER(REMI):
                         type_="DeltaDirection",
                         value=0,
                         time=event.time,
-                        desc=event.time,
+                        desc="Negative Delta",
                     )
                 )
             all_events.append(
@@ -316,9 +397,36 @@ class REAPER(REMI):
                     type_="Delta",
                     value=min(abs(delta),self.delta_range),
                     time=event.time,
-                    desc=event.time,
+                    desc=f"Delta {delta}",
                 )
             )
+
+    def _create_dur_delta_event(
+        self,
+        time: int,
+        tick_event: int,
+        tick_dur: int,
+    ) -> tuple[Event]:
+        # Downsampling to the durational microtiming resolution
+        delta_tok = None
+        delta_dir = None
+        delta = (tick_event - tick_dur) // self.dur_to_pos_delta_factor * self.dur_to_pos_delta_factor
+        if delta !=0:
+            if delta < 0:
+                delta_dir = Event(
+                    type_=f"{self.dur_delta_token}Direction",
+                    value=0,
+                    time=time,
+                    desc="Negative Duration Delta",
+                )
+            delta_tok = Event(
+                type_=self.dur_delta_token,
+                value=min(abs(delta),self.delta_range),
+                time=time,
+                desc=f"Delta Duration {delta}",
+            )
+
+        return delta_dir, delta_tok
 
     def __create_tpb_per_ts(self) -> dict[int, int]:
         """
@@ -451,7 +559,23 @@ class REAPER(REMI):
         vocab += [
             f"Delta_{i}" for i in range(1,self.delta_range+1)
         ]
-        vocab.append("DeltaDirection_0")
+        if self.signed_microtiming:
+            vocab += [
+                f"Delta_{i}" for i in range(-self.delta_range,0)
+            ]
+        else:
+            vocab.append("DeltaDirection_0")
+
+        if self.use_dur_microtiming and not self.joint_microtiming:
+            vocab += [
+                f"DurationDelta_{i}" for i in range(1,self.dur_delta_range+1)
+            ]
+            if self.signed_microtiming:
+                vocab += [
+                    f"DurationDelta_{i}" for i in range(-self.dur_delta_range,0)
+                ]
+            else:
+                vocab.append("DurationDeltaDirection_0")
 
         return vocab
     
@@ -493,6 +617,11 @@ class REAPER(REMI):
         dic["Position"].add("Delta")
         dic["Position"].add("DeltaDirection")
         dic["DeltaPosition"] = {"Delta"}
+
+        if self.use_dur_microtiming:
+            dic["Duration"].add(self.dur_delta_token)
+            dic["Duration"].add(f"{self.dur_delta_token}Direction")
+            dic[f"{self.dur_delta_token}Direction"] = {self.dur_delta_token}
 
         return dic
     
@@ -702,6 +831,8 @@ class REAPER(REMI):
             current_program = 0
             previous_note_end = 0
             current_delta_direction = 1
+            current_dur_delta_direction = 1
+            dur_delta_tick = 0
             previous_pitch_onset = {prog: -128 for prog in self.config.programs}
             previous_pitch_chord = {prog: -128 for prog in self.config.programs}
             # Set track / sequence program if needed
@@ -727,7 +858,7 @@ class REAPER(REMI):
             current_track_use_duration = (
                 current_program in self.config.use_note_duration_programs
             )
-
+            prev_tok_type = None
             # Decode tokens
             for ti, token in enumerate(seq):
                 tok_type, tok_val = token.split("_")
@@ -743,9 +874,20 @@ class REAPER(REMI):
                     current_tick = tick_at_current_bar + int(tok_val) * ticks_per_pos
                     current_delta_direction = 1
                 elif tok_type == "DeltaDirection":
-                    current_delta_direction = -1
+                    if self.joint_microtiming and prev_tok_type == "Duration":
+                        current_dur_delta_direction = -1
+                    else:
+                        current_delta_direction = -1
                 elif tok_type == "Delta":
-                    delta_tick = current_delta_direction * int(tok_val)
+                    if self.joint_microtiming and prev_tok_type == "Duration":
+                        dur_delta_tick = current_dur_delta_direction * int(tok_val) * self.dur_to_pos_delta_factor
+                    else:
+                        delta_tick = current_delta_direction * int(tok_val)
+                        current_tick += delta_tick
+                elif tok_type == "DurationDeltaDirection" and not self.joint_microtiming:
+                    current_dur_delta_direction = -1
+                elif tok_type == "DurationDelta" and not self.joint_microtiming:
+                    delta_tick = current_delta_direction * int(tok_val) * self.dur_to_pos_delta_factor
                     current_tick += delta_tick
                 elif tok_type in {
                     "Pitch",
@@ -782,10 +924,10 @@ class REAPER(REMI):
                         else:
                             dur_type = "Duration"
                             dur = int(
-                                self.config.default_note_duration * self.tpq
+                                self.config.default_note_duration
                             )
                         if vel_type == "Velocity" and dur_type == "Duration":
-                            dur = int(dur) * ticks_per_dur
+                            dur = int(dur) * ticks_per_dur + dur_delta_tick
                             new_note = Note(
                                 current_tick,
                                 dur,
@@ -800,6 +942,8 @@ class REAPER(REMI):
                             previous_note_end = max(
                                 previous_note_end, current_tick + dur
                             )
+                            dur_delta_tick = 0
+                            current_dur_delta_direction = 1
                     except IndexError:
                         # A well constituted sequence should not raise an exception
                         # However with generated sequences this can happen, or if the
@@ -837,6 +981,8 @@ class REAPER(REMI):
                         )
                         ticks_per_pos = self.delta_factor
                         ticks_per_dur = self.tpq // self.res_dur
+                    
+                prev_tok_type = tok_type
 
             # Add current_inst to score and handle notes still active
             if not self.config.one_token_stream_for_programs and not is_track_empty(
@@ -959,12 +1105,10 @@ class REAPER(REMI):
 
             # Duration / NoteOff
             if use_durations:
-                events.append(
-                    self._create_duration_event(
-                        note=note,
-                        _program=program,
-                        _ticks_per_pos = time_division // self.res_dur
-                    )
+                events += self._create_duration_event(
+                    note=note,
+                    _program=program,
+                    _ticks_per_pos = time_division // self.res_dur
                 )
 
         return events
