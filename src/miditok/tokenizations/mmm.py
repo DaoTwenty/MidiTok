@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
 
-    from symusic import Score
+    from symusic import Score, Track
 
     from miditok import TokenizerConfig
 
@@ -125,6 +125,24 @@ class MMM(MusicTokenizer):
         track_start_event = Event("Track", "Start", 0)
         track_end_event = Event("Track", "End", track_events[-1].time + 1)
         return [track_start_event, *track_events, track_end_event]
+    
+    def _create_track_events(
+            self, 
+            track: Track, 
+            ticks_per_beat: np.ndarray, 
+            time_division: int, 
+            ticks_bars: Sequence[int], 
+            ticks_beats: Sequence[int], 
+            attribute_controls_indexes: Mapping[int, Sequence[int] | bool] | None = None
+        ) -> list[Event]:
+        return self.base_tokenizer._create_track_events(
+            track, 
+            ticks_per_beat, 
+            time_division, 
+            ticks_bars, 
+            ticks_beats, 
+            attribute_controls_indexes
+        )
 
     def encode(
         self,

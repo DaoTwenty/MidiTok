@@ -1,4 +1,4 @@
-from miditok import TokenizerConfig, REMI, REAPER
+from miditok import TokenizerConfig, REMI, REAPER, MMM
 from pathlib import Path
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
@@ -40,7 +40,8 @@ TOKENIZER_PARAMS = {
     "num_tempos": 48,
     "tempo_range": (50, 200),
     "programs": list(range(-1, 127)),
-    "use_microtiming": False
+    "use_microtiming": False,
+    "base_tokenizer": "REAPER"
 }
 
 TOKENIZER_PARAMS_DELTA = TOKENIZER_PARAMS.copy()
@@ -69,6 +70,11 @@ tokenizers = [
     (REAPER(config_joint), 'joint'),
 ]
 
+mmm_tokenizers = [
+    (MMM(config), 'mmm_quant'),
+    (MMM(config_delta), 'mmm_delta')
+]
+
 res_size = 0
 res_equal = 0
 total = 0
@@ -80,10 +86,10 @@ print_all = True
 if not os.path.exists("MIDIs_decoded"):
     os.makedirs("MIDIs_decoded")
 
-for mf in tqdm(MIDI_PATHS_ONE_TRACK):
+for mf in tqdm(MIDI_PATHS_MULTITRACK):
     res = []
     print(f" ----- {mf.stem} ----- ")
-    for tokenizer, name in tokenizers:
+    for tokenizer, name in mmm_tokenizers:
         # Tokenize a MIDI file
         tokens = tokenizer(mf)  # automatically detects Score objects, paths, tokens
         res.append(tokens.tokens)
