@@ -302,7 +302,7 @@ class REAPER(REMI):
         ) -> int:
         return min(
                     int((end_tick - start_tick) / ticks_per_unit + 0.5), 
-                    self.max_pos
+                    self.max_pos - 1
                 )
     
     def _units_dur(self, duration_tick: int, ticks_per_unit: int) -> int:
