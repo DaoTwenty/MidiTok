@@ -28,6 +28,8 @@ from .constants import (
     AC_REPETITION_TRACK,
     AC_REPETITION_TRACK_NUM_BINS,
     AC_REPETITION_TRACK_NUM_CONSEC_BARS,
+    AC_NOMML_TRACK,
+    AC_NOMML_TRACK_DEPTH,
     BEAT_RES,
     BEAT_RES_REST,
     CHORD_MAPS,
@@ -576,6 +578,11 @@ class TokenizerConfig:
         ``10``)
     :param ac_repetition_track_num_consec_bars: number of successive bars to
         compare the repetition similarity between bars. (default: ``4``)
+    :param ac_median_metric_level: enables track-level NOMML attribute control tokens
+        using :class:`miditok.attribute_controls.TrackMedianMetricLevel`. 
+        (default: ``False``).
+    :param ac_max_metric_depth: maximum metric depth used by the Median Metric Level
+        attribute control.
     :param kwargs: additional parameters that will be saved in
         ``config.additional_params``.
     """
@@ -639,6 +646,8 @@ class TokenizerConfig:
         ac_repetition_track: bool = AC_REPETITION_TRACK,
         ac_repetition_track_num_bins: int = AC_REPETITION_TRACK_NUM_BINS,
         ac_repetition_track_num_consec_bars: int = AC_REPETITION_TRACK_NUM_CONSEC_BARS,
+        ac_nomml_track: bool = AC_NOMML_TRACK,
+        ac_nomml_track_depth: int = AC_NOMML_TRACK_DEPTH,
         **kwargs,
     ) -> None:
         # Checks
@@ -828,6 +837,8 @@ class TokenizerConfig:
         self.ac_repetition_track = ac_repetition_track
         self.ac_repetition_track_num_bins = ac_repetition_track_num_bins
         self.ac_repetition_track_num_consec_bars = ac_repetition_track_num_consec_bars
+        self.ac_nomml_track = ac_nomml_track
+        self.ac_nomml_track_depth = ac_nomml_track_depth
 
         # Additional params
         self.additional_params = kwargs

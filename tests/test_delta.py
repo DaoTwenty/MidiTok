@@ -1,9 +1,12 @@
 from miditok import TokenizerConfig, REMI, REAPER, MMM
+from miditok.attribute_controls import create_random_ac_indexes
 from pathlib import Path
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 from tqdm import tqdm
 import os 
+
+from symusic import Score
 
 HERE = Path(__file__).parent
 MIDI_PATHS_ONE_TRACK = sorted((HERE / "MIDIs_one_track").rglob("*.mid"))
@@ -41,7 +44,11 @@ TOKENIZER_PARAMS = {
     "tempo_range": (50, 200),
     "programs": list(range(-1, 127)),
     "use_microtiming": False,
-    "base_tokenizer": "REAPER"
+    "base_tokenizer": "REAPER",
+    "ac_nomml_track": True,
+    "ac_note_density_track": True,
+    "ac_polyphony_bar": True,
+    "one_token_stream_for_programs": False,
 }
 
 TOKENIZER_PARAMS_DELTA = TOKENIZER_PARAMS.copy()
@@ -86,12 +93,27 @@ print_all = True
 if not os.path.exists("MIDIs_decoded"):
     os.makedirs("MIDIs_decoded")
 
+tracks_idx_ratio = 1
+bars_idx_ratio = 1
+
 for mf in tqdm(MIDI_PATHS_MULTITRACK):
     res = []
     print(f" ----- {mf.stem} ----- ")
     for tokenizer, name in mmm_tokenizers:
+        score = Score(mf)
+        score = tokenizer.preprocess_score(score)
+        ac_ind = create_random_ac_indexes(
+            score,
+            tokenizer.attribute_controls,
+            tracks_idx_ratio,
+            bars_idx_ratio,
+        )
         # Tokenize a MIDI file
-        tokens = tokenizer(mf)  # automatically detects Score objects, paths, tokens
+        tokens = tokenizer(
+            score, 
+            no_preprocess_score = True, 
+            attribute_controls_indexes = ac_ind
+        )  # automatically detects Score objects, paths, tokens
         res.append(tokens.tokens)
         # Convert to MIDI and save it
         for tok in tokens.tokens:

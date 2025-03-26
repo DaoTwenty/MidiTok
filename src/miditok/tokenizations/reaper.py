@@ -416,8 +416,6 @@ class REAPER(REMI):
         delta_dir = None
         delta = (tick_event - tick_dur) // self.dur_to_pos_delta_factor * self.dur_to_pos_delta_factor
         if delta !=0:
-            print('raw',tick_event - tick_dur)
-            print('real', delta)
             if delta < 0 and not self.signed_microtiming:
                 delta_dir = Event(
                     type_=f"{self.dur_delta_token}Direction",
@@ -429,7 +427,6 @@ class REAPER(REMI):
                 delta = min(abs(delta),self.dur_delta_range)
             else:
                 delta = max(min(delta,self.dur_delta_range), -self.dur_delta_range)
-            print('tok', delta)
             delta_tok = Event(
                 type_=self.dur_delta_token,
                 value=delta,

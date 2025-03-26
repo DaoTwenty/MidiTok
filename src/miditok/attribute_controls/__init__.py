@@ -12,6 +12,7 @@ from .track_attribute_controls import (
     TrackNoteDuration,
     TrackOnsetPolyphony,
     TrackRepetition,
+    TrackMedianMetricLevel,
 )
 
 __all__ = (
@@ -25,5 +26,6 @@ __all__ = (
     "TrackNoteDuration",
     "TrackNoteDensity",
     "TrackOnsetPolyphony",
+    "TrackMedianMetricLevel",
     "create_random_ac_indexes",
 )

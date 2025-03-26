@@ -54,6 +54,7 @@ from .attribute_controls import (
     TrackNoteDuration,
     TrackOnsetPolyphony,
     TrackRepetition,
+    TrackMedianMetricLevel,
 )
 from .classes import Event, TokenizerConfig, TokSequence
 from .constants import (
@@ -317,6 +318,12 @@ class MusicTokenizer(ABC, HFHubMixin):
                     self.config.ac_repetition_track_num_bins,
                     self.config.ac_repetition_track_num_consec_bars,
                     self.config.pitch_range,
+                )
+            )
+        if self.config.ac_nomml_track:
+            self.add_attribute_control(
+                TrackMedianMetricLevel(
+                    self.config.ac_nomml_track_depth,
                 )
             )
 
