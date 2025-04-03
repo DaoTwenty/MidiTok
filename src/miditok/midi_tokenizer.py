@@ -1191,9 +1191,10 @@ class MusicTokenizer(ABC, HFHubMixin):
         for ti, track in enumerate(score.tracks):
             metadata_track = metadata.copy()
             metadata_track["loops"] = []
-            for loop in metadata["loops"]:
-                if loop["track_idx"] == ti:
-                    metadata_track["loops"].append(loop)
+            if "loops" in metadata.keys():
+                for loop in metadata["loops"]:
+                    if loop["track_idx"] == ti:
+                        metadata_track["loops"].append(loop)
             track_events = self._create_track_events(
                 track,
                 ticks_per_beat,
