@@ -310,7 +310,7 @@ class PerTok(MusicTokenizer):
         self,
         tokens: TokSequence | list[TokSequence],
         programs: list[tuple[int, bool]] | None = None,
-    ) -> Score:
+    ) -> tuple[Score, dict]:
         r"""
         Convert tokens (:class:`miditok.TokSequence`) into a ``symusic.Score``.
 
@@ -323,6 +323,7 @@ class PerTok(MusicTokenizer):
             piano, program 0. (default: ``None``)
         :return: the ``symusic.Score`` object.
         """
+        metadata = {}
         # Unsqueeze tokens in case of one_token_stream
         if self.config.one_token_stream_for_programs:  # ie single token seq
             tokens = [tokens]
@@ -557,7 +558,7 @@ class PerTok(MusicTokenizer):
             time_signature_changes.append(TimeSignature(0, num, den))
         score.time_signatures = time_signature_changes
 
-        return score
+        return score, metadata
 
     def _tokens_errors(self, _tokens: list[str | list[str]]) -> int:
         return 0

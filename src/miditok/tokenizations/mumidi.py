@@ -116,6 +116,7 @@ class MuMIDI(MusicTokenizer):
         score: Score,
         attribute_controls_indexes: Mapping[int, Mapping[int, Sequence[int] | bool]]
         | None = None,
+        metadata: dict[str, list[int]] = {}
     ) -> TokSequence:
         r"""
         Convert a **preprocessed** ``symusic.Score`` object to a sequence of tokens.
@@ -300,7 +301,7 @@ class MuMIDI(MusicTokenizer):
         self,
         tokens: TokSequence,
         _: None = None,
-    ) -> Score:
+    ) -> tuple[Score, dict]:
         r"""
         Convert tokens (:class:`miditok.TokSequence`) into a ``symusic.Score``.
 
@@ -314,7 +315,7 @@ class MuMIDI(MusicTokenizer):
         :return: the ``symusic.Score`` object.
         """
         score = Score(self.time_division)
-
+        metadata = {}
         # Tempos
         if self.config.use_tempos and len(tokens) > 0:
             first_tempo = float(tokens.tokens[0][3].split("_")[1])
@@ -384,7 +385,7 @@ class MuMIDI(MusicTokenizer):
                 )
             score.tracks[-1].notes = notes
 
-        return score
+        return score, metadata
 
     def _create_base_vocabulary(self) -> list[list[str]]:
         r"""

@@ -30,6 +30,7 @@ from .constants import (
     AC_REPETITION_TRACK_NUM_CONSEC_BARS,
     AC_NOMML_TRACK,
     AC_NOMML_TRACK_DEPTH,
+    AC_LOOPS_TRACK,
     BEAT_RES,
     BEAT_RES_REST,
     CHORD_MAPS,
@@ -647,6 +648,7 @@ class TokenizerConfig:
         ac_repetition_track_num_bins: int = AC_REPETITION_TRACK_NUM_BINS,
         ac_repetition_track_num_consec_bars: int = AC_REPETITION_TRACK_NUM_CONSEC_BARS,
         ac_nomml_track: bool = AC_NOMML_TRACK,
+        ac_loops_track: bool = AC_LOOPS_TRACK,
         ac_nomml_track_depth: int = AC_NOMML_TRACK_DEPTH,
         **kwargs,
     ) -> None:
@@ -838,6 +840,7 @@ class TokenizerConfig:
         self.ac_repetition_track_num_bins = ac_repetition_track_num_bins
         self.ac_repetition_track_num_consec_bars = ac_repetition_track_num_consec_bars
         self.ac_nomml_track = ac_nomml_track
+        self.ac_loops_track = ac_loops_track
         self.ac_nomml_track_depth = ac_nomml_track_depth
 
         # Additional params

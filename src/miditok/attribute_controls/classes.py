@@ -43,6 +43,7 @@ class AttributeControl(ABC):
         ticks_bars: Sequence[int],
         ticks_beats: Sequence[int],
         bars_idx: Sequence[int],
+        metadata: dict = {}
     ) -> list[Event]:
         """
         Compute the attribute control from a ``symusic.Track``.
@@ -69,6 +70,7 @@ class BarAttributeControl(AttributeControl, ABC):
         ticks_bars: Sequence[int],
         ticks_beats: Sequence[int],
         bars_idx: Sequence[int],
+        metadata: dict = {}
     ) -> list[Event]:
         """
         Compute the attribute control from a ``symusic.Track``.

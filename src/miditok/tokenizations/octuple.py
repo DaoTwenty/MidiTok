@@ -209,6 +209,7 @@ class Octuple(MusicTokenizer):
         score: Score,
         attribute_controls_indexes: Mapping[int, Mapping[int, Sequence[int] | bool]]
         | None = None,
+        metadata: dict[str, list[int]] = {}
     ) -> TokSequence | list[TokSequence]:
         r"""
         Convert a **preprocessed** ``symusic.Score`` object to a sequence of tokens.
@@ -248,7 +249,7 @@ class Octuple(MusicTokenizer):
         self,
         tokens: TokSequence | list[TokSequence],
         programs: list[tuple[int, bool]] | None = None,
-    ) -> Score:
+    ) -> tuple[Score, dict]:
         r"""
         Convert tokens (:class:`miditok.TokSequence`) into a ``symusic.Score``.
 
@@ -261,6 +262,7 @@ class Octuple(MusicTokenizer):
             piano, program 0. (default: ``None``)
         :return: the ``symusic.Score`` object.
         """
+        metadata = {}
         # Unsqueeze tokens in case of one_token_stream
         if self.config.one_token_stream_for_programs:  # ie single token seq
             tokens = [tokens]
@@ -442,7 +444,7 @@ class Octuple(MusicTokenizer):
         score.tempos = tempo_changes
         score.time_signatures = time_signature_changes
 
-        return score
+        return score, metadata
 
     def _create_base_vocabulary(self) -> list[list[str]]:
         r"""

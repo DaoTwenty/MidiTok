@@ -55,6 +55,7 @@ from .attribute_controls import (
     TrackOnsetPolyphony,
     TrackRepetition,
     TrackMedianMetricLevel,
+    LoopControl
 )
 from .classes import Event, TokenizerConfig, TokSequence
 from .constants import (
@@ -325,6 +326,10 @@ class MusicTokenizer(ABC, HFHubMixin):
                 TrackMedianMetricLevel(
                     self.config.ac_nomml_track_depth,
                 )
+            )
+        if self.config.ac_loops_track:
+            self.add_attribute_control(
+                LoopControl()
             )
 
     def add_attribute_control(self, attribute_control: AttributeControl) -> None:
@@ -1123,6 +1128,7 @@ class MusicTokenizer(ABC, HFHubMixin):
         score: Score,
         attribute_controls_indexes: Mapping[int, Mapping[int, Sequence[int] | bool]]
         | None = None,
+        metadata: dict[str, list[int]] = {}
     ) -> TokSequence | list[TokSequence]:
         r"""
         Convert a **preprocessed** ``symusic.Score`` object to a sequence of tokens.
@@ -1183,6 +1189,11 @@ class MusicTokenizer(ABC, HFHubMixin):
         ticks_bars = get_bars_ticks(score, only_notes_onsets=True)
         ticks_beats = get_beats_ticks(score, only_notes_onsets=True)
         for ti, track in enumerate(score.tracks):
+            metadata_track = metadata.copy()
+            metadata_track["loops"] = []
+            for loop in metadata["loops"]:
+                if loop["track_idx"] == ti:
+                    metadata_track["loops"].append(loop)
             track_events = self._create_track_events(
                 track,
                 ticks_per_beat,
@@ -1190,6 +1201,7 @@ class MusicTokenizer(ABC, HFHubMixin):
                 ticks_bars,
                 ticks_beats,
                 attribute_controls_indexes.get(ti, None),
+                metadata_track
             )
             if self.config.one_token_stream_for_programs:
                 all_events += track_events
@@ -1251,6 +1263,7 @@ class MusicTokenizer(ABC, HFHubMixin):
         ticks_bars: Sequence[int],
         ticks_beats: Sequence[int],
         attribute_controls_indexes: Mapping[int, Sequence[int] | bool] | None = None,
+        metadata: dict[str, list[int]] = {}
     ) -> list[Event]:
         r"""
         Extract the tokens/events from a track (``symusic.Track``).
@@ -1613,6 +1626,7 @@ class MusicTokenizer(ABC, HFHubMixin):
         no_preprocess_score: bool = False,
         attribute_controls_indexes: Mapping[int, Mapping[int, Sequence[int] | bool]]
         | None = None,
+        metadata: dict[str, list[int]] = {}
     ) -> TokSequence | list[TokSequence]:
         r"""
         Tokenize a music file (MIDI/abc), given as a ``symusic.Score`` or a file path.
@@ -1662,7 +1676,11 @@ class MusicTokenizer(ABC, HFHubMixin):
             score = self.preprocess_score(score)
 
         # Tokenize it
-        tokens = self._score_to_tokens(score, attribute_controls_indexes)
+        tokens = self._score_to_tokens(
+            score, 
+            attribute_controls_indexes, 
+            metadata
+        )
         # Add bar/beat ticks here to TokSeq as they need to be from preprocessed Score
         add_bar_beats_ticks_to_tokseq(tokens, score)
 
@@ -1921,7 +1939,7 @@ class MusicTokenizer(ABC, HFHubMixin):
         tokens: TokSequence | list[TokSequence] | list[int | list[int]] | np.ndarray,
         programs: list[tuple[int, bool]] | None = None,
         output_path: str | Path | None = None,
-    ) -> Score:
+    ) -> tuple[Score, dict]:
         r"""
         Detokenize one or several sequences of tokens into a ``symusic.Score``.
 
@@ -1953,7 +1971,7 @@ class MusicTokenizer(ABC, HFHubMixin):
             for seq in tokens:
                 self._preprocess_tokseq_before_decoding(seq)
 
-        score = self._tokens_to_score(tokens, programs)
+        score, metadata = self._tokens_to_score(tokens, programs)
 
         # Create controls for pedals
         # This is required so that they are saved when the Score is dumped, as symusic
@@ -1980,14 +1998,14 @@ class MusicTokenizer(ABC, HFHubMixin):
                 score.dump_abc(output_path)
             else:
                 score.dump_midi(output_path)
-        return score
+        return score, metadata
 
     @abstractmethod
     def _tokens_to_score(
         self,
         tokens: TokSequence | list[TokSequence],
         programs: list[tuple[int, bool]] | None = None,
-    ) -> Score:
+    ) -> tuple[Score, dict]:
         r"""
         Convert tokens (:class:`miditok.TokSequence`) into a ``symusic.Score``.
 

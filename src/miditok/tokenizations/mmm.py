@@ -133,7 +133,8 @@ class MMM(MusicTokenizer):
             time_division: int, 
             ticks_bars: Sequence[int], 
             ticks_beats: Sequence[int], 
-            attribute_controls_indexes: Mapping[int, Sequence[int] | bool] | None = None
+            attribute_controls_indexes: Mapping[int, Sequence[int] | bool] | None = None,
+            metadata: dict[str, list[int]] = {}
         ) -> list[Event]:
         return self.base_tokenizer._create_track_events(
             track, 
@@ -141,7 +142,8 @@ class MMM(MusicTokenizer):
             time_division, 
             ticks_bars, 
             ticks_beats, 
-            attribute_controls_indexes
+            attribute_controls_indexes,
+            metadata
         )
 
     def encode(
@@ -152,6 +154,7 @@ class MMM(MusicTokenizer):
         attribute_controls_indexes: Mapping[int, Mapping[int, Sequence[int] | bool]]
         | None = None,
         concatenate_track_sequences: bool = True,
+        metadata: dict[str, list[int]] = {}
     ) -> TokSequence | list[TokSequence]:
         r"""
         Tokenize a music file (MIDI/abc), given as a ``symusic.Score`` or a file path.
@@ -197,6 +200,7 @@ class MMM(MusicTokenizer):
             encode_ids,
             no_preprocess_score,
             attribute_controls_indexes,
+            metadata
         )
         # Concatenate the sequences
         if concatenate_track_sequences:
@@ -277,7 +281,7 @@ class MMM(MusicTokenizer):
         self,
         tokens: TokSequence,
         _: None = None,
-    ) -> Score:
+    ) -> tuple[Score, dict]:
         r"""
         Convert tokens (:class:`miditok.TokSequence`) into a ``symusic.Score``.
 

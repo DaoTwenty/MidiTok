@@ -66,6 +66,7 @@ USE_MICROTIMING_REAPER = True
 USE_DUR_MICROTIMING_REAPER = False
 SIGNED_MICROTIMING = False
 JOINT_MICROTIMING = False
+USE_LOOPS = False
 
 # Chord params
 # "chord_unknown" specifies the range of number of notes that can form "unknown" chords
@@ -135,6 +136,7 @@ AC_NOTE_DURATION_BAR = False
 AC_NOTE_DURATION_TRACK = False
 AC_REPETITION_TRACK = False
 AC_NOMML_TRACK = False
+AC_LOOPS_TRACK = False
 AC_POLYPHONY_MIN = 1
 AC_POLYPHONY_MAX = 6
 AC_NOTE_DENSITY_BAR_MAX = 18

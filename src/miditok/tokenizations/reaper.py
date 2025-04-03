@@ -25,6 +25,7 @@ from miditok.constants import (
     MICROTIMING_FACTOR,
     USE_MICROTIMING_REAPER,
     USE_DUR_MICROTIMING_REAPER,
+    USE_LOOPS,
     SIGNED_MICROTIMING,
     JOINT_MICROTIMING,
 )
@@ -36,6 +37,7 @@ from miditok.attribute_controls import (
 from miditok.utils import (
     compute_ticks_per_bar,
     compute_ticks_per_beat,
+    get_bars_ticks
 )
 
 from miditok.midi_tokenizer import MusicTokenizer
@@ -151,6 +153,8 @@ class REAPER(REMI):
                 msg = """Positional microtiming factor must be divisible by 
                     durational microtiming factor"""
                 raise ValueError(msg)
+        if "use_loops" not in self.config.additional_params:
+            self.config.additional_params["use_loops"] = USE_LOOPS
         if (
             self.res_dur > self.res_pos or 
             self.res_pos % self.res_dur != 0
@@ -162,6 +166,7 @@ class REAPER(REMI):
 
         self.use_microtiming = self.config.additional_params["use_microtiming"] 
         self.use_dur_microtiming = self.config.additional_params["use_dur_microtiming"]
+        self.use_loops = self.config.additional_params["use_loops"]
         # Implementation requires positional microtiming in order to use 
         # durational microtiming. This condition can be bypassed by removing
         # the following line
@@ -283,11 +288,17 @@ class REAPER(REMI):
         if self.use_microtiming:
             tpq_to_resample = self.tpq
 
+        '''
         return super()._resample_score(
             score, 
             tpq_to_resample,
             _time_signatures_copy
         )
+        '''
+        if score.ticks_per_quarter != tpq_to_resample:
+            score = score.resample(tpq_to_resample, min_dur=1)
+
+        return score
     
     # For position token value, we want to round to the nearest integer,
     # not round to the integer closest to zero.
@@ -560,30 +571,32 @@ class REAPER(REMI):
         # Add additional tokens
         self._add_additional_tokens_to_vocab_list(vocab)
         
-        if not self.use_microtiming:
-            return vocab
         
         # Microtiming
-        vocab += [
-            f"Delta_{i}" for i in range(1,self.delta_range+1)
-        ]
-        if self.signed_microtiming:
+        if self.use_microtiming:
             vocab += [
-                f"Delta_{i}" for i in range(-self.delta_range-1,0)
-            ]
-        else:
-            vocab.append("DeltaDirection_0")
-
-        if self.use_dur_microtiming and not self.joint_microtiming:
-            vocab += [
-                f"DurationDelta_{i}" for i in range(1,self.dur_delta_range+1)
+                f"Delta_{i}" for i in range(1,self.delta_range+1)
             ]
             if self.signed_microtiming:
                 vocab += [
-                    f"DurationDelta_{i}" for i in range(-self.dur_delta_range-1,0)
+                    f"Delta_{i}" for i in range(-self.delta_range-1,0)
                 ]
             else:
-                vocab.append("DurationDeltaDirection_0")
+                vocab.append("DeltaDirection_0")
+
+            if self.use_dur_microtiming and not self.joint_microtiming:
+                vocab += [
+                    f"DurationDelta_{i}" for i in range(1,self.dur_delta_range+1)
+                ]
+                if self.signed_microtiming:
+                    vocab += [
+                        f"DurationDelta_{i}" for i in range(-self.dur_delta_range-1,0)
+                    ]
+                else:
+                    vocab.append("DurationDeltaDirection_0")
+        if self.use_loops:
+            vocab.append("Loop_Start")
+            vocab.append("Loop_End")
 
         return vocab
     
@@ -616,7 +629,7 @@ class REAPER(REMI):
 
         :return: the token types transitions dictionary.
         """
-        dic = super(). _create_token_types_graph()
+        dic = super()._create_token_types_graph()
 
         if not self.use_microtiming:
             return dic
@@ -642,6 +655,62 @@ class REAPER(REMI):
         ticks_per_beat = compute_ticks_per_beat(current_time_sig[1], time_division)
         ticks_per_pos = time_division // self.res_pos
         return ticks_per_bar, ticks_per_beat, ticks_per_pos
+    
+    def encode_loops(
+            self,
+            score: Score,
+            loops: dict[str: list[int] | list[tuple[int, int]]]
+    ) -> dict[str: list[int]]:
+        r"""
+        Convert loops in ticks to loops in position token values and give their bar 
+        position
+
+        :param score: symusic.Score to extract bar tick value information.
+        :param loops: track index, tick start, and tick end of loops
+        :return: the same loops, with positions identical to token values
+        """
+        quantized_loops = {
+            "start_pos": [],
+            "end_pos": [],
+            "track_idx": [],
+            "bar_idx": []
+        }
+        bar_ticks = get_bars_ticks(score, only_notes_onsets=True)
+        num_loops = len(loops["end_tick"])
+        #quantized_loops["track_idx"] = loops["track_idx"]
+        for i in range(num_loops):
+            quantized_loops["track_idx"].append(loops["track_idx"][i])
+            start_tick = loops["start_tick"][i]
+            end_tick = loops["end_tick"][i]
+            bar_idx_start = 0
+            while (
+                bar_ticks[bar_idx_start] > start_tick 
+            ):
+                bar_idx_start += 1
+            bar_idx_end = 0
+            while (
+                bar_ticks[bar_idx_end] > end_tick 
+            ):
+                bar_idx_end += 1
+            quantized_loops["bar_idx"].append((
+                bar_idx_start,
+                bar_idx_end
+            ))
+            bar_tick_start = bar_ticks[bar_idx_start]
+            bar_tick_end =  bar_ticks[bar_idx_end]
+            start_pos = self._units_between_pos( 
+                bar_tick_start, 
+                start_tick, 
+                score.ticks_per_quarter // self.res_pos
+            )
+            end_pos = self._units_between_pos( 
+                bar_tick_end, 
+                end_tick, 
+                score.ticks_per_quarter // self.res_pos
+            )
+            quantized_loops["start_pos"].append(start_pos)
+            quantized_loops["end_pos"].append(end_pos)
+        return quantized_loops
     
     def _add_time_events(self, events: list[Event], time_division: int) -> list[Event]:
         r"""
@@ -763,7 +832,7 @@ class REAPER(REMI):
         self,
         tokens: TokSequence | list[TokSequence],
         programs: list[tuple[int, bool]] | None = None,
-    ) -> Score:
+    ) -> tuple[Score, dict]:
         r"""
         Convert tokens (:class:`miditok.TokSequence`) into a ``symusic.Score``.
 
@@ -787,6 +856,10 @@ class REAPER(REMI):
         # RESULTS
         tracks: dict[int, Track] = {}
         tempo_changes, time_signature_changes = [], []
+        metadata = {}
+        metadata["tpq"] = self.tpq
+        if self.use_loops:
+            metadata["loops"] = []
 
         def check_inst(prog: int) -> None:
             if prog not in tracks:
@@ -841,6 +914,8 @@ class REAPER(REMI):
             current_delta_direction = 1
             current_dur_delta_direction = 1
             dur_delta_tick = 0
+            loop_starts = []
+            loop_end = 0
             previous_pitch_onset = {prog: -128 for prog in self.config.programs}
             previous_pitch_chord = {prog: -128 for prog in self.config.programs}
             # Set track / sequence program if needed
@@ -881,20 +956,20 @@ class REAPER(REMI):
                         current_bar = 0
                     current_tick = tick_at_current_bar + int(tok_val) * ticks_per_pos
                     current_delta_direction = 1
-                elif tok_type == "DeltaDirection":
+                elif tok_type == "DeltaDirection" and self.use_microtiming:
                     if self.joint_microtiming and prev_tok_type == "Duration":
                         current_dur_delta_direction = -1
                     else:
                         current_delta_direction = -1
-                elif tok_type == "Delta":
+                elif tok_type == "Delta" and self.use_microtiming:
                     if self.joint_microtiming and prev_tok_type == "Duration":
                         dur_delta_tick = current_dur_delta_direction * int(tok_val) * self.dur_to_pos_delta_factor
                     else:
                         delta_tick = current_delta_direction * int(tok_val)
                         current_tick += delta_tick
-                elif tok_type == "DurationDeltaDirection" and not self.joint_microtiming:
+                elif tok_type == "DurationDeltaDirection" and not self.joint_microtiming and self.use_microtiming:
                     current_dur_delta_direction = -1
-                elif tok_type == "DurationDelta" and not self.joint_microtiming:
+                elif tok_type == "DurationDelta" and not self.joint_microtiming and self.use_microtiming:
                     dur_delta_tick = current_delta_direction * int(tok_val) * self.dur_to_pos_delta_factor
                 elif tok_type in {
                     "Pitch",
@@ -988,7 +1063,19 @@ class REAPER(REMI):
                         )
                         ticks_per_pos = self.delta_factor
                         ticks_per_dur = self.tpq // self.res_dur
-                    
+                elif tok_type == "Loop" and self.use_loops:
+                    if tok_val == "Start":
+                        loop_starts.append(current_tick)
+                    if tok_val == "End":
+                        loop_end = current_tick
+                        if len(loop_starts) > 0:
+                            loop_start = loop_starts[-1]
+                            loop_starts = loop_starts[:-1]
+                            metadata["loops"].append({
+                                "start": loop_start,
+                                "end": loop_end,
+                                "track_idx": si
+                            })
                 prev_tok_type = tok_type
 
             # Add current_inst to score and handle notes still active
@@ -1003,7 +1090,7 @@ class REAPER(REMI):
         score.tempos = tempo_changes
         score.time_signatures = time_signature_changes
 
-        return score
+        return score, metadata
     
     def _create_track_events(
         self,
@@ -1013,6 +1100,7 @@ class REAPER(REMI):
         ticks_bars: Sequence[int],
         ticks_beats: Sequence[int],
         attribute_controls_indexes: Mapping[int, Sequence[int] | bool] | None = None,
+        metadata: dict[str, list[int]] = {}
     ) -> list[Event]:
         r"""
         Extract the tokens/events from a track (``symusic.Track``).
@@ -1067,6 +1155,7 @@ class REAPER(REMI):
                     ticks_bars,
                     ticks_beats,
                     tracks_bars_idx,
+                    metadata = metadata
                 )
 
         # Creates the Note On, Note Off and Velocity events
@@ -1117,5 +1206,39 @@ class REAPER(REMI):
                     _program=program,
                     _ticks_per_pos = time_division // self.res_dur
                 )
+
+        # Loops metadata
+        if (
+            self.use_loops and 
+            "loops" in metadata.keys() and 
+            "tpq" in metadata.keys()
+        ):
+            score_tpq = metadata["tpq"]
+            scale_rate = self.tpq / score_tpq
+            for loop in metadata["loops"]:
+                start_tick_raw = loop["start_tick"]
+                end_tick_raw = loop["end_tick"]
+                start_tick = round(start_tick_raw * scale_rate)
+                end_tick = round(end_tick_raw * scale_rate)
+                # loop detection should avoid this but just to be sure
+                if start_tick < end_tick:
+                    events.append(
+                        Event(
+                            type_="Loop",
+                            value="Start",
+                            time=start_tick,
+                            program=program,
+                            desc=f"{start_tick}",
+                        )
+                    )
+                    events.append(
+                        Event(
+                            type_="Loop",
+                            value="End",
+                            time=end_tick,
+                            program=program,
+                            desc=f"{end_tick}",
+                        )
+                    )
 
         return events

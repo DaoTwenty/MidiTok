@@ -13,6 +13,7 @@ from .track_attribute_controls import (
     TrackOnsetPolyphony,
     TrackRepetition,
     TrackMedianMetricLevel,
+    LoopControl
 )
 
 __all__ = (
@@ -27,5 +28,6 @@ __all__ = (
     "TrackNoteDensity",
     "TrackOnsetPolyphony",
     "TrackMedianMetricLevel",
+    "LoopControl",
     "create_random_ac_indexes",
 )

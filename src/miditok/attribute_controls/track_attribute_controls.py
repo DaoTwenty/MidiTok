@@ -53,6 +53,7 @@ class TrackOnsetPolyphony(AttributeControl):
         ticks_bars: Sequence[int],
         ticks_beats: Sequence[int],
         bars_idx: Sequence[int],
+        metadata: dict = {}
     ) -> list[Event]:
         """
         Compute the attribute control from a ``symusic.Track``.
@@ -120,6 +121,7 @@ class TrackNoteDuration(AttributeControl):
         ticks_bars: Sequence[int],
         ticks_beats: Sequence[int],
         bars_idx: Sequence[int],
+        metadata: dict = {}
     ) -> list[Event]:
         """
         Compute the attribute control from a ``symusic.Track``.
@@ -184,6 +186,7 @@ class TrackNoteDensity(AttributeControl):
         ticks_bars: Sequence[int],
         ticks_beats: Sequence[int],
         bars_idx: Sequence[int],
+        metadata: dict = {}
     ) -> list[Event]:
         """
         Compute the attribute control from a ``symusic.Track``.
@@ -261,6 +264,7 @@ class TrackRepetition(AttributeControl):
         ticks_bars: Sequence[int],
         ticks_beats: Sequence[int],
         bars_idx: Sequence[int],
+        metadata: dict = {}
     ) -> list[Event]:
         """
         Compute the attribute control from a ``symusic.Track``.
@@ -330,6 +334,7 @@ class TrackMedianMetricLevel(AttributeControl):
         ticks_bars: Sequence[int],
         ticks_beats: Sequence[int],
         bars_idx: Sequence[int],
+        metadata: dict = {}
     ) -> list[Event]:
         """
         Compute the attribute control from a ``symusic.Track``.
@@ -387,6 +392,7 @@ class Harmonicity(AttributeControl):
         ticks_bars: Sequence[int],
         ticks_beats: Sequence[int],
         bars_idx: Sequence[int],
+        metadata: dict = {}
     ) -> list[Event]:
         """
         Compute the attribute control from a ``symusic.Track``.
@@ -423,3 +429,67 @@ class Harmonicity(AttributeControl):
             average_harmonicity = 0
 
         return average_harmonicity
+    
+class LoopControl(AttributeControl):
+    """
+        Controls number and duration of loops
+
+        :param max_loops: Max number of loops.
+        :param quantiles: loop duration quantiles.
+        """
+    def __init__(
+            self, 
+            max_loops : int = 5, 
+            quantiles: list[int] = [6,8,12,16,24,32]) -> None:
+        self.max_loops = max_loops
+        self.quantiles = quantiles
+        super().__init__(
+            tokens=[
+                *(
+                    f"ACLoopCount_{i}"
+                    for i in range(0, self.max_loops)
+                ),
+                f"ACLoopCount_{self.max_loops}+",
+                *(
+                    f"ACLoopDurationQunatile_{i}"
+                    for i in range(1, len(self.quantiles) + 1)
+                )
+            ],
+        )
+
+    def compute(
+            self,
+            track: TrackTick,
+            time_division: int,
+            ticks_bars: Sequence[int],
+            ticks_beats: Sequence[int],
+            bars_idx: Sequence[int],
+            metadata: dict = {}
+        ) -> list[Event]:
+
+        res = []
+
+        if "loops" in metadata.keys() and "tpq" in metadata.keys():
+            bins = []
+            score_tpq = metadata["tpq"]
+            loop_count = len(metadata["loops"])
+            if loop_count < self.max_loops:
+                res += [Event("ACLoopCount", f"{loop_count}", -1)]
+            else:
+                res += [Event("ACLoopCount", f"{self.max_loops}+", -1)]
+            for loop in metadata["loops"]:
+                start_tick_raw = loop["start_tick"]
+                end_tick_raw = loop["end_tick"]
+                dur = (end_tick_raw - start_tick_raw) / score_tpq
+                i = 0
+                while dur > self.quantiles[i]:
+                    i += 1
+                bins.append(i)
+            bins = list(set(bins))
+            for i in bins:
+                res += [Event(
+                    "ACLoopDurationQunatile",
+                    f"{i+1}",
+                    -1
+                )]
+        return res

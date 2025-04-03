@@ -46,6 +46,7 @@ TOKENIZER_PARAMS = {
     "use_microtiming": False,
     "base_tokenizer": "REAPER",
     "ac_nomml_track": True,
+    "ac_loops_track":False,
     "ac_note_density_track": True,
     "ac_polyphony_bar": True,
     "one_token_stream_for_programs": False,
@@ -53,6 +54,9 @@ TOKENIZER_PARAMS = {
 
 TOKENIZER_PARAMS_DELTA = TOKENIZER_PARAMS.copy()
 TOKENIZER_PARAMS_DELTA["use_microtiming"] = True
+TOKENIZER_PARAMS_DELTA_LOOPS = TOKENIZER_PARAMS_DELTA.copy()
+TOKENIZER_PARAMS_DELTA_LOOPS["use_loops"] = True
+TOKENIZER_PARAMS_DELTA_LOOPS["ac_loops_track"] = True
 TOKENIZER_PARAMS_DUR = TOKENIZER_PARAMS_DELTA.copy()
 TOKENIZER_PARAMS_DUR["use_dur_microtiming"] = True
 TOKENIZER_PARAMS_SIGNED = TOKENIZER_PARAMS_DELTA.copy()
@@ -66,6 +70,7 @@ MIDI_PATHS_ONE_TRACK_EASY = [
 
 config = TokenizerConfig(**TOKENIZER_PARAMS)
 config_delta = TokenizerConfig(**TOKENIZER_PARAMS_DELTA)
+config_loops = TokenizerConfig(**TOKENIZER_PARAMS_DELTA_LOOPS)
 config_dur = TokenizerConfig(**TOKENIZER_PARAMS_DUR)
 config_joint = TokenizerConfig(**TOKENIZER_PARAMS_JOINT)
 config_signed = TokenizerConfig(**TOKENIZER_PARAMS_SIGNED)
@@ -75,11 +80,17 @@ tokenizers = [
     (REAPER(config_signed), 'signed'),
     (REAPER(config_dur), 'duration'),
     (REAPER(config_joint), 'joint'),
+    (REAPER(config_loops), 'loops'),
 ]
 
 mmm_tokenizers = [
     (MMM(config), 'mmm_quant'),
-    (MMM(config_delta), 'mmm_delta')
+    (MMM(config_delta), 'mmm_delta'),
+    (MMM(config_loops), 'mmm_delta_loops')
+]
+
+mmm_tokenizers_loops = [
+    (MMM(config_loops), 'mmm_delta_loops')
 ]
 
 res_size = 0
@@ -89,6 +100,7 @@ total = 0
 test = [Path('mtest.mid')]
 
 print_all = True
+print_none = False
 
 if not os.path.exists("MIDIs_decoded"):
     os.makedirs("MIDIs_decoded")
@@ -96,11 +108,29 @@ if not os.path.exists("MIDIs_decoded"):
 tracks_idx_ratio = 1
 bars_idx_ratio = 1
 
-for mf in tqdm(MIDI_PATHS_MULTITRACK):
+for mf in tqdm(MIDI_PATHS_MULTITRACK[:1]):
     res = []
     print(f" ----- {mf.stem} ----- ")
-    for tokenizer, name in mmm_tokenizers:
+    for tokenizer, name in mmm_tokenizers_loops:
         score = Score(mf)
+        metadata = {"loops":[
+            {
+                "track_idx":0,
+                "start_tick":0,
+                "end_tick":3*score.tpq
+            },
+            {
+                "track_idx":0,
+                "start_tick":score.tpq,
+                "end_tick":2*score.tpq
+            },
+            {
+                "track_idx":1,
+                "start_tick":score.tpq,
+                "end_tick":2*score.tpq
+            }
+        ]}
+        metadata["tpq"] = score.tpq
         score = tokenizer.preprocess_score(score)
         ac_ind = create_random_ac_indexes(
             score,
@@ -112,19 +142,15 @@ for mf in tqdm(MIDI_PATHS_MULTITRACK):
         tokens = tokenizer(
             score, 
             no_preprocess_score = True, 
-            attribute_controls_indexes = ac_ind
+            attribute_controls_indexes = ac_ind,
+            metadata = metadata
         )  # automatically detects Score objects, paths, tokens
         res.append(tokens.tokens)
         # Convert to MIDI and save it
         for tok in tokens.tokens:
-            if 'Delta' in tok or print_all:
+            if ('Delta' in tok or print_all) and not print_none:
                 print(f"    {name} - {tok}")
-        generated_midi = tokenizer(tokens)
+        generated_midi, metadata = tokenizer(tokens)
+        print(metadata)
         generated_midi.dump_midi(Path("MIDIs_decoded", f"{mf.stem}_{type(tokenizer).__name__}_{name}.mid"))
-    total += 1
-    res_size += int((len(res[0]) == len(res[1])))
-    res_equal += int((res[0] == res[1]))
-
-print(f"Same size: {100 * res_size/total} %")
-print(f"Same sequence: {100 * res_equal/total} %")
         
