@@ -108,10 +108,10 @@ if not os.path.exists("MIDIs_decoded"):
 tracks_idx_ratio = 1
 bars_idx_ratio = 1
 
-for mf in tqdm(MIDI_PATHS_MULTITRACK[:1]):
+for mf in tqdm(MIDI_PATHS_MULTITRACK):
     res = []
     print(f" ----- {mf.stem} ----- ")
-    for tokenizer, name in mmm_tokenizers_loops:
+    for tokenizer, name in mmm_tokenizers:
         score = Score(mf)
         metadata = {"loops":[
             {

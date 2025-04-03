@@ -451,9 +451,9 @@ class LoopControl(AttributeControl):
                 ),
                 f"ACLoopCount_{self.max_loops}+",
                 *(
-                    f"ACLoopDurationQunatile_{i}"
-                    for i in range(1, len(self.quantiles) + 1)
-                )
+                    f"ACLoopDurationQuantile_{i}"
+                    for i in range(1, len(self.quantiles) + 2)
+                ),
             ],
         )
 
@@ -484,11 +484,13 @@ class LoopControl(AttributeControl):
                 i = 0
                 while dur > self.quantiles[i]:
                     i += 1
+                    if i >= len(self.quantiles):
+                        break
                 bins.append(i)
             bins = list(set(bins))
             for i in bins:
                 res += [Event(
-                    "ACLoopDurationQunatile",
+                    "ACLoopDurationQuantile",
                     f"{i+1}",
                     -1
                 )]
