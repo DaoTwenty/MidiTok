@@ -52,6 +52,7 @@ class DataCollator:
         inputs_kwarg_name: str = "input_ids",
         labels_kwarg_name: str = "labels",
         decoder_inputs_kwarg_name: str = "decoder_input_ids",
+        debug: bool = False
     ) -> None:
         self.pad_token = pad_token_id
         self.pad_on_left = pad_on_left
@@ -61,6 +62,7 @@ class DataCollator:
         self.inputs_kwarg_name = inputs_kwarg_name
         self.labels_kwarg_name = labels_kwarg_name
         self.decoder_inputs_kwarg_name = decoder_inputs_kwarg_name
+        self.debug = debug
 
     def __call__(self, batch: list[Mapping[str, Any]]) -> Mapping[str, LongTensor]:
         """
@@ -142,6 +144,8 @@ class DataCollator:
                 attention_mask = attention_mask[..., 0]  # (N,T,Z) --> (N,T)
             out_batch["decoder_attention_mask"] = attention_mask
 
+        if self.debug:
+            print({k: v.shape for k, v in out_batch.items()})
         return out_batch
 
 
