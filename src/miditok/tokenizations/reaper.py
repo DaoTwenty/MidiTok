@@ -114,11 +114,45 @@ class REAPER(REMI):
         
         super().__init__(tokenizer_config, max_bar_embedding, params)
 
+        self._non_exp_tpb = [
+            self._tpb_per_ts,
+            self._tpb_to_time_array,
+            self._tpb_tokens_to_ticks,
+            self._tpb_ticks_to_tokens
+        ]
+        self._exp_tpb = []
+
         if self.use_microtiming:
             self._tpb_per_ts = self.__create_tpb_per_ts()
             self._tpb_to_time_array = self.__create_tpb_to_ticks_array()
             self._tpb_tokens_to_ticks = self.__create_tpb_tokens_to_ticks()
             self._tpb_ticks_to_tokens = self.__create_tpb_ticks_to_tokens()
+            self._exp_tpb = [
+                self._tpb_per_ts,
+                self._tpb_to_time_array,
+                self._tpb_tokens_to_ticks,
+                self._tpb_ticks_to_tokens
+            ]
+
+    def _update_microtiming(
+        self,
+        new_microtiming: bool
+    ) -> None:
+        if new_microtiming:
+            self.use_microtiming = True
+            self._tpb_per_ts = self._exp_tpb[0]
+            self._tpb_to_time_array = self._exp_tpb[1]
+            self._tpb_tokens_to_ticks = self._exp_tpb[2]
+            self._tpb_ticks_to_tokens = self._exp_tpb[3]
+        else:
+            self.use_microtiming = False
+            self._tpb_per_ts = self._non_exp_tpb[0]
+            self._tpb_to_time_array = self._non_exp_tpb[1]
+            self._tpb_tokens_to_ticks = self._non_exp_tpb[2]
+            self._tpb_ticks_to_tokens = self._non_exp_tpb[3]
+        self.use_dur_microtiming = self.config.additional_params["use_dur_microtiming"]
+        self.use_dur_microtiming &= self.use_microtiming
+
 
     # Methods to override base MusicTokenizer versions
     # To handle MicroTiming and multiple beat_res resolutions
@@ -285,8 +319,12 @@ class REAPER(REMI):
         self, score: Score, _new_tpq: int, _time_signatures_copy: TimeSignatureTickList
     ) -> Score:
         tpq_to_resample = _new_tpq
+        
         if self.use_microtiming:
             tpq_to_resample = self.tpq
+        
+        # Always resample at same tpq (use_microtiming or not)???
+        # tpq_to_resample = self.tpq
 
         '''
         return super()._resample_score(

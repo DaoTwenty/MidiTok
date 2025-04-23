@@ -7,6 +7,26 @@ from tqdm import tqdm
 import os 
 
 from symusic import Score
+import random
+
+VALID_TOKEN_BASE = [
+    "Loop",
+    "Start",
+    "Bar",
+    "End",
+    "Delta",
+    "AC"
+]
+MAX_LOOPS = 7
+
+def valid_token(
+    token,
+    valid_tokens
+) -> bool:
+    for valid_token in valid_tokens:
+        if valid_token in token:
+            return True
+    return False
 
 HERE = Path(__file__).parent
 MIDI_PATHS_ONE_TRACK = sorted((HERE / "MIDIs_one_track").rglob("*.mid"))
@@ -99,7 +119,7 @@ total = 0
 
 test = [Path('mtest.mid')]
 
-print_all = True
+print_all = False
 print_none = False
 
 if not os.path.exists("MIDIs_decoded"):
@@ -112,7 +132,11 @@ for mf in tqdm(MIDI_PATHS_MULTITRACK):
     res = []
     print(f" ----- {mf.stem} ----- ")
     for tokenizer, name in mmm_tokenizers:
+        if tokenizer.base_tokenizer.use_microtiming:
+            tokenizer.base_tokenizer._update_microtiming(random.choice([True, False]))
         score = Score(mf)
+
+        '''
         metadata = {"loops":[
             {
                 "track_idx":0,
@@ -130,8 +154,25 @@ for mf in tqdm(MIDI_PATHS_MULTITRACK):
                 "end_tick":2*score.tpq
             }
         ]}
+        '''
+        metadata = {}
+        n_loops = random.randint(0, MAX_LOOPS)
+        tracks = [i for i in range(len(score.tracks))]
+        loop_track_indices = random.choices(tracks, k=n_loops)
+        loops = []
+        for track_idx in loop_track_indices:
+            max_tick = score.tracks[track_idx].end()
+            st = random.randint(0, max_tick-1)
+            et = random.randint(st, max_tick)
+            loop = {
+                "track_idx": track_idx,
+                "start_tick": st,
+                "end_tick": et
+            }
+            loops.append(loop)
+        metadata["loops"] = loops
         metadata["tpq"] = score.tpq
-        score = tokenizer.preprocess_score(score)
+        score = tokenizer.base_tokenizer.preprocess_score(score)
         ac_ind = create_random_ac_indexes(
             score,
             tokenizer.attribute_controls,
@@ -148,7 +189,7 @@ for mf in tqdm(MIDI_PATHS_MULTITRACK):
         res.append(tokens.tokens)
         # Convert to MIDI and save it
         for tok in tokens.tokens:
-            if ('Delta' in tok or print_all) and not print_none:
+            if (valid_token(tok, VALID_TOKEN_BASE) or print_all) and not print_none:
                 print(f"    {name} - {tok}")
         generated_midi, metadata = tokenizer(tokens)
         print(metadata)
