@@ -322,21 +322,12 @@ class REAPER(REMI):
         
         if self.use_microtiming:
             tpq_to_resample = self.tpq
-        
-        # Always resample at same tpq (use_microtiming or not)???
-        # tpq_to_resample = self.tpq
 
-        '''
         return super()._resample_score(
             score, 
             tpq_to_resample,
             _time_signatures_copy
         )
-        '''
-        if score.ticks_per_quarter != tpq_to_resample:
-            score = score.resample(tpq_to_resample, min_dur=1)
-
-        return score
     
     # For position token value, we want to round to the nearest integer,
     # not round to the integer closest to zero.
