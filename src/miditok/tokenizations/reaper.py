@@ -1101,8 +1101,8 @@ class REAPER(REMI):
                             loop_start = loop_starts[-1]
                             loop_starts = loop_starts[:-1]
                             metadata["loops"].append({
-                                "start": loop_start,
-                                "end": loop_end,
+                                "start_tick": loop_start,
+                                "end_tick": loop_end,
                                 "track_idx": si
                             })
                 prev_tok_type = tok_type
