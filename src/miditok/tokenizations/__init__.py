@@ -9,6 +9,7 @@ their specific behaviors/representations.
 from .cp_word import CPWord
 from .midi_like import MIDILike
 from .mmm import MMM
+from .mmm_base import MMM_Base
 from .mumidi import MuMIDI
 from .octuple import Octuple
 from .pertok import PerTok
@@ -19,6 +20,7 @@ from .tsd import TSD
 __all__ = [
     "MMM",
     "REMI",
+    "MMM_Base",
     "TSD",
     "CPWord",
     "MIDILike",

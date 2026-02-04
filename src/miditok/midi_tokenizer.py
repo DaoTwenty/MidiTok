@@ -206,16 +206,22 @@ class MusicTokenizer(ABC, HFHubMixin):
         # Duration/TimeShift/Rest: ticks + tpb --> token (str);
         # Duration/TimeShift/Rest: token + tpb --> ticks (int);
         self.durations = self._create_durations_tuples()
-        self._tpb_to_time_array = self.__create_tpb_to_ticks_array()
-        self._tpb_tokens_to_ticks = self.__create_tpb_tokens_to_ticks()
-        self._tpb_ticks_to_tokens = self.__create_tpb_ticks_to_tokens()
+        self._tpb_to_time_array = self._create_tpb_to_ticks_array()
+        self._tpb_tokens_to_ticks = self._create_tpb_tokens_to_ticks()
+        self._tpb_ticks_to_tokens = self._create_tpb_ticks_to_tokens()
+
+        #print(self._tpb_per_ts)
+        #print(len(self.durations), self.durations)
+        #print(self._tpb_to_time_array)
+        #print(self._tpb_tokens_to_ticks)
+        #print(self._tpb_ticks_to_tokens)
 
         # Rests
         self.rests = []
         if self.config.use_rests:
             self.rests = self.__create_rests()
-        self._tpb_to_rest_array = self.__create_tpb_to_ticks_array(rest=True)
-        self._tpb_rests_to_ticks = self.__create_tpb_tokens_to_ticks(rest=True)
+            self._tpb_to_rest_array = self._create_tpb_to_ticks_array(rest=True)
+            self._tpb_rests_to_ticks = self._create_tpb_tokens_to_ticks(rest=True)
 
         # Velocities
         # [1:] so that there is no velocity_0
@@ -1288,6 +1294,8 @@ class MusicTokenizer(ABC, HFHubMixin):
         previous_note_onset = -max_time_interval - 1
         previous_pitch_onset = -128  # lowest at a given time
         previous_pitch_chord = -128  # for chord intervals
+        previous_velocity = -1
+        previous_velocity_bar = -1
 
         # Attribute controls
         if attribute_controls_indexes:
@@ -1378,6 +1386,9 @@ class MusicTokenizer(ABC, HFHubMixin):
         # Creates the Note On, Note Off and Velocity events
         tpb_idx = 0
         for note in track.notes:
+
+            current_bar = np.searchsorted(ticks_bars, note.time, side="right") - 1
+
             # Program
             if self.config.use_programs and not self.config.program_changes:
                 events.append(
@@ -1459,15 +1470,34 @@ class MusicTokenizer(ABC, HFHubMixin):
 
             # Velocity
             if self.config.use_velocities:
-                events.append(
-                    Event(
-                        type_="Velocity",
-                        value=note.velocity,
-                        time=note.start,
-                        program=program,
-                        desc=f"{note.velocity}",
-                    )
-                )
+                if (not self.config.use_velocity_changes
+                    or previous_velocity != note.velocity
+                    or previous_velocity_bar != current_bar):
+                    if self.config.use_velocity_changes:
+                        # If we use velocity changes, velocity token 
+                        # precedes the onset and duration tokens
+                        events.insert(
+                            -1,
+                            Event(
+                                type_="Velocity",
+                                value=note.velocity,
+                                time=note.start,
+                                program=program,
+                                desc=f"{note.velocity}",
+                            ),
+                        )
+                    else:
+                        events.append(
+                            Event(
+                                type_="Velocity",
+                                value=note.velocity,
+                                time=note.start,
+                                program=program,
+                                desc=f"{note.velocity}",
+                            )
+                        )
+                    previous_velocity_bar = current_bar
+                    previous_velocity = note.velocity
 
             # Duration / NoteOff
             if use_durations:
@@ -1500,13 +1530,19 @@ class MusicTokenizer(ABC, HFHubMixin):
                             _program=program,
                             _ticks_per_beat=ticks_per_beat,
                             _tpb_idx=tpb_idx,
+                            _time_division=time_division
                         )
                     )
 
         return events
 
     def _create_duration_event(
-        self, note: Note, _program: int, _ticks_per_beat: np.ndarray, _tpb_idx: int
+        self, 
+        note: Note, 
+        _program: int, 
+        _ticks_per_beat: np.ndarray, 
+        _tpb_idx: int,
+        _time_division: int
     ) -> Event:
         while note.time >= _ticks_per_beat[_tpb_idx, 0]:
             _tpb_idx += 1
@@ -2314,7 +2350,7 @@ class MusicTokenizer(ABC, HFHubMixin):
                 for token_type in original_token_types:
                     self.tokens_types_graph[token_type].add(special_token_type)
 
-    def _create_durations_tuples(self) -> list[tuple[int, int, int]]:
+    def _create_durations_tuples(self) -> list[tuple[int, int, int] | int]:
         r"""
         Create the possible durations in beat / position units as tuples of intergers.
 
@@ -2426,7 +2462,7 @@ class MusicTokenizer(ABC, HFHubMixin):
 
         return factors_idx
 
-    def __create_tpb_to_ticks_array(self, rest: bool = False) -> dict[int, np.ndarray]:
+    def _create_tpb_to_ticks_array(self, rest: bool = False) -> dict[int, np.ndarray]:
         r"""
         Create arrays of the times in ticks of the time tokens of the vocabulary.
 
@@ -2449,7 +2485,7 @@ class MusicTokenizer(ABC, HFHubMixin):
             for tpb in self._tpb_per_ts.values()
         }
 
-    def __create_tpb_tokens_to_ticks(
+    def _create_tpb_tokens_to_ticks(
         self, rest: bool = False
     ) -> dict[int, dict[str, int]]:
         r"""
@@ -2476,7 +2512,7 @@ class MusicTokenizer(ABC, HFHubMixin):
             for tpb in self._tpb_per_ts.values()
         }
 
-    def __create_tpb_ticks_to_tokens(self) -> dict[int, dict[int, str]]:
+    def _create_tpb_ticks_to_tokens(self) -> dict[int, dict[int, str]]:
         r"""
         Create the correspondences between times in tick and token value (str).
 
@@ -2494,9 +2530,8 @@ class MusicTokenizer(ABC, HFHubMixin):
             for tpb, tokens_to_ticks in self._tpb_tokens_to_ticks.items()
         }
 
-    @staticmethod
     def _time_token_to_ticks(
-        token_duration: str | tuple[int, int, int], ticks_per_beat: int
+        self, token_duration: str | tuple[int, int, int], ticks_per_beat: int
     ) -> int:
         r"""
         Convert a time token value of the form beat.position.resolution, in ticks.

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
 
-    from symusic import Score
+    from symusic import Score, Note
 
     from miditok import TokenizerConfig
 
@@ -93,16 +93,67 @@ class MMM(MusicTokenizer):
             )
             raise ValueError(msg)
 
+        if "separate_track_drum" not in self.config.additional_params:
+            self.config.additional_params["separate_track_drum"] = False
+
+        self.separate_drum_track = bool(self.config.additional_params["separate_track_drum"])
+
+        if self.separate_drum_track:
+            self.track_tokens = {
+                "start": ["Track_Inst", "Track_Drum"], 
+                "end": ["Track_End"]
+            }
+        else:
+            self.track_tokens = {
+                "start": ["Track_Start"], 
+                "end": ["Track_End"]
+            }
         # Add Track_Start and Track_End tokens to config
-        for token in ("Track_Start", "Track_End"):
+        for token in self.track_tokens["start"] + self.track_tokens["end"]:
             if token not in self.config.special_tokens:
                 self.config.special_tokens.append(token)
 
         # Create base tokenizer
         base_tokenizer_config = self.config.copy()
         self.base_tokenizer = getattr(miditok, tokenizer_name)(base_tokenizer_config)
+        self.config.additional_params.update(self.base_tokenizer.config.additional_params)
         self.base_tokenizer.config.use_programs = True
         self._note_on_off = self.base_tokenizer._note_on_off
+
+    def _create_durations_tuples(self) -> list[tuple[int, int, int] | int]:
+
+        return self.base_tokenizer._create_durations_tuples()
+    
+    def _create_tpb_tokens_to_ticks(
+        self, rest: bool = False
+    ) -> dict[int, dict[str, int]]:
+        
+        return self.base_tokenizer._create_tpb_tokens_to_ticks(rest)
+    
+    def _create_tpb_to_ticks_array(self, rest: bool = False) -> dict[int, np.ndarray]:
+
+        return self.base_tokenizer._create_tpb_to_ticks_array(rest)
+    
+    def _create_duration_event(
+        self, 
+        note: Note, 
+        _program: int, 
+        _ticks_per_beat: np.ndarray, 
+        _tpb_idx: int,
+        _time_division: int
+    ) -> Event:
+        
+        return self.base_tokenizer._create_duration_event(
+            note, 
+            _program, 
+            _ticks_per_beat, 
+            _tpb_idx,
+            _time_division
+        )
+    
+    def _add_note_tokens_to_vocab_list(self, vocab: list[str]) -> None:
+
+        return self.base_tokenizer._add_note_tokens_to_vocab_list(vocab)
 
     def _add_time_events(self, events: list[Event], time_division: int) -> list[Event]:
         r"""
@@ -122,7 +173,15 @@ class MMM(MusicTokenizer):
         else:
             track_events = self.base_tokenizer._add_time_events(events, time_division)
 
-        track_start_event = Event("Track", "Start", 0)
+        is_drum = (events[-1].program == -1)
+
+        if self.separate_drum_track:
+            if is_drum:
+                track_start_event = Event("Track", "Drum", 0)
+            else:
+                track_start_event = Event("Track", "Inst", 0)
+        else:
+            track_start_event = Event("Track", "Start", 0)
         track_end_event = Event("Track", "End", track_events[-1].time + 1)
         return [track_start_event, *track_events, track_end_event]
 
@@ -236,9 +295,11 @@ class MMM(MusicTokenizer):
             (default: ``False``)
         :return: list :class:`miditok.TokSequence`, one for each track in ``tokseq``.
         """
-        track_tokens_idx = np.where(np.array(tokseq.ids) == self.vocab["Track_Start"])[
-            0
-        ].tolist()
+        track_token_ids = [self.vocab[tok] for tok in self.track_tokens["start"]]
+
+        track_tokens_idx = np.where(
+            np.isin(np.array(tokseq.ids), track_token_ids)
+        )[0].tolist()
         if len(track_tokens_idx) == 0:
             return [tokseq]
 
@@ -315,7 +376,8 @@ class MMM(MusicTokenizer):
         err = 0
         i = 0
         while i < len(tokens):
-            if tokens[i] != "Track_Start":
+            
+            if tokens[i] not in self.track_tokens["start"]:
                 i += 1
                 continue
 

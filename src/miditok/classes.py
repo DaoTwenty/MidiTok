@@ -8,7 +8,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from math import log2
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Dict
 
 from numpy import ndarray
 
@@ -65,6 +65,7 @@ from .constants import (
     USE_TEMPOS,
     USE_TIME_SIGNATURE,
     USE_VELOCITIES,
+    USE_VELOCITY_CHANGES
 )
 
 if TYPE_CHECKING:
@@ -443,6 +444,8 @@ class TokenizerConfig:
         to discrete drum elements (bass drum, high tom, cymbals...) which are unrelated
         to the pitch value of other instruments/programs. Using dedicated tokens for
         drums allow to disambiguate this, and is thus recommended. (default: ``True``)
+    :param use_velocity_changes: emit a velocity token only when the velocity changes 
+        (w.r.t. the last emitted velocity), scoped to a bar. (default: ``False``)
     :param default_note_duration: default duration in beats to set for notes for which
         the duration is not tokenized. This parameter is used when decoding tokens to
         set the duration value of notes within tracks with programs not in the
@@ -597,6 +600,7 @@ class TokenizerConfig:
         use_programs: bool = USE_PROGRAMS,
         use_pitch_intervals: bool = USE_PITCH_INTERVALS,
         use_pitchdrum_tokens: bool = USE_PITCHDRUM_TOKENS,
+        use_velocity_changes: bool = USE_VELOCITY_CHANGES,
         default_note_duration: int | float = DEFAULT_NOTE_DURATION,
         beat_res_rest: dict[tuple[int, int], int] = BEAT_RES_REST,
         chord_maps: dict[str, tuple] = CHORD_MAPS,
@@ -711,6 +715,7 @@ class TokenizerConfig:
         self.use_programs: bool = use_programs
         self.use_pitch_intervals: bool = use_pitch_intervals
         self.use_pitchdrum_tokens: bool = use_pitchdrum_tokens
+        self.use_velocity_changes: bool = use_velocity_changes
 
         # Duration
         self.default_note_duration = default_note_duration
@@ -943,6 +948,19 @@ class TokenizerConfig:
         with config_file_path.open() as param_file:
             dict_config = json.load(param_file)
 
+        dict_config = cls.deserialize_dict(dict_config)
+
+        return cls.from_dict(dict_config)
+
+    @classmethod
+    def deserialize_dict(cls, dict_config: Dict) -> TokenizerConfig:
+        r"""
+        Convert a serialized dict into a dict that can be properly loaded
+        into the config.
+
+        :param dict_config: Dict containing serialized keys and values
+        """
+
         for beat_res_key in ["beat_res", "beat_res_rest"]:
             dict_config[beat_res_key] = {
                 tuple(map(int, beat_range.split("_"))): res
@@ -954,7 +972,7 @@ class TokenizerConfig:
             for res, beat_range in dict_config["time_signature_range"].items()
         }
 
-        return cls.from_dict(dict_config)
+        return dict_config
 
     def copy(self) -> TokenizerConfig:
         """

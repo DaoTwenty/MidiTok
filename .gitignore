@@ -248,3 +248,5 @@ fabric.properties
 
 # Aider cache directory
 .aider*
+
+**/.DS_Store

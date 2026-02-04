@@ -38,6 +38,26 @@ BOS_TOKEN_NAME = "BOS"
 EOS_TOKEN_NAME = "EOS"
 SPECIAL_TOKENS = ["PAD", BOS_TOKEN_NAME, EOS_TOKEN_NAME, "MASK"]
 MANDATORY_SPECIAL_TOKENS = ["PAD"]
+BAR_START_VALUE = "Start"
+DEFAULT_TOKEN_ORDER = {
+    "NO_VEL": {
+        "Position": 0,
+        "Pitch": 1,
+        "Duration": 2
+    },
+    "VEL": {
+        "Position": 0,
+        "Velocity": 1,
+        "Pitch": 2,
+        "Duration": 3
+    },
+    "VEL_REP": {
+        "Position": 0,
+        "Pitch": 1,
+        "Velocity": 2,
+        "Duration": 3
+    }
+}
 
 # Additional/Optional tokens
 USE_VELOCITIES = True
@@ -50,6 +70,7 @@ USE_PITCH_BENDS = False
 USE_PROGRAMS = False
 USE_PITCHDRUM_TOKENS = True
 USE_NOTE_DURATION_PROGRAMS = list(range(-1, 128))
+USE_VELOCITY_CHANGES = False
 
 # Pitch as intervals
 USE_PITCH_INTERVALS = False
@@ -136,7 +157,7 @@ AC_REPETITION_TRACK_NUM_BINS = 10
 
 
 # Tokenizers specific parameters
-MMM_COMPATIBLE_TOKENIZERS = {"TSD", "REMI", "MIDILike"}
+MMM_COMPATIBLE_TOKENIZERS = {"TSD", "REMI", "MMM_Base", "MIDILike"}
 USE_BAR_END_TOKENS = False  # REMI
 ADD_TRAILING_BARS = False  # REMI
 
