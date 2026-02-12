@@ -607,7 +607,7 @@ class MMM_Base(MusicTokenizer):
             # Decode tokens
             for ti, token in enumerate(seq):
                 tok_type, tok_val = token.split("_")
-                if tok_type == "Bar":
+                if tok_type == "Bar" and tok_val != "End" :
                     current_bar += 1
                     if current_bar > 0:
                         current_tick = tick_at_current_bar + ticks_per_bar
