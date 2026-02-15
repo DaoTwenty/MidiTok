@@ -369,7 +369,7 @@ class MMM_Base(MusicTokenizer):
                 ticks_per_bar,
             )
 
-        if self.config.additional_params["use_bar_end_tokens"] and current_bar > 0:
+        if self.config.additional_params["use_bar_end_tokens"]:
             last_bar_tick = (
                 tick_at_last_ts_change
                 + (current_bar + 1 - bar_at_last_ts_change) * ticks_per_bar

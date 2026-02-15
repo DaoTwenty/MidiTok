@@ -710,7 +710,7 @@ def get_bars_ticks(score: Score, only_notes_onsets: bool = False) -> list[int]:
     # Mock the last one to cover the last section in the loop below in all cases, as it
     # prevents the case in which the last time signature had an invalid numerator or
     # denominator (that would have been skipped in the while loop below).
-    time_sigs.append(TimeSignature(max_tick, *TIME_SIGNATURE))
+    #time_sigs.append(TimeSignature(max_tick, *TIME_SIGNATURE))
 
     # Section from tick 0 to first time sig is 4/4 if first time sig time is not 0
     if (
@@ -733,6 +733,18 @@ def get_bars_ticks(score: Score, only_notes_onsets: bool = False) -> list[int]:
             current_time_sig.time + ticks_per_bar * i for i in range(num_bars)
         ]
         current_time_sig = time_signature
+
+    #We deal with last time signature seperately 
+    ticks_per_bar = compute_ticks_per_bar(current_time_sig, score.ticks_per_quarter)
+    ticks_diff = max_tick - current_time_sig.time
+    num_bars = ceil(ticks_diff / ticks_per_bar)
+    bars_ticks += [
+        current_time_sig.time + ticks_per_bar * i for i in range(num_bars)
+    ]
+    # If the last notes onsets fall on where a new bar would start
+    # That means they belong to that potential bar and we must add it
+    if bars_ticks[-1] + ticks_per_bar == max_tick:
+        bars_ticks.append(bars_ticks[-1] + ticks_per_bar)
 
     return bars_ticks
 
