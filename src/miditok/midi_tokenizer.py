@@ -1311,6 +1311,7 @@ class MusicTokenizer(ABC, HFHubMixin):
                     ticks_bars,
                     ticks_beats,
                     tracks_bars_idx,
+                    compute_on_empty=self.config.ac_compute_on_empty
                 )
 
         # Add sustain pedal

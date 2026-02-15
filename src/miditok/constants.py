@@ -139,6 +139,7 @@ DRUM_PITCH_RANGE = (27, 88)
 REMOVE_DUPLICATED_NOTES = False
 
 # Attribute controls default arguments
+AC_COMPUTE_EMPTY = False
 AC_POLYPHONY_TRACK = False
 AC_POLYPHONY_BAR = False
 AC_PITCH_CLASS_BAR = False

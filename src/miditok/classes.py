@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal, Dict
 from numpy import ndarray
 
 from .constants import (
+    AC_COMPUTE_EMPTY,
     AC_NOTE_DENSITY_BAR,
     AC_NOTE_DENSITY_BAR_MAX,
     AC_NOTE_DENSITY_TRACK,
@@ -542,12 +543,14 @@ class TokenizerConfig:
         argument is only used when ``use_drums_pitch_tokens`` is ``True``. (default:
         ``(27, 88)``, recommended range from the GM2 specs without the "Applause" at
         pitch 88 of the orchestra drum set)
+    :param ac_compute_on_empty: Enables the attributes to be computed on empty bars.
+    (default: ``False``)
     :param ac_polyphony_track: enables track-level polyphony attribute control tokens
         using :class:`miditok.attribute_controls.TrackOnsetPolyphony`. (default:
-        ``False``).
+        ``False``)
     :param ac_polyphony_bar: enables bar-level polyphony attribute control tokens
         using :class:`miditok.attribute_controls.BarOnsetPolyphony`. (default:
-        ``False``).
+        ``False``)
     :param ac_polyphony_min: minimum number of simultaneous notes for polyphony
         attribute control. (default: ``1``)
     :param ac_polyphony_max: maximum number of simultaneous notes for polyphony
@@ -627,6 +630,7 @@ class TokenizerConfig:
         max_pitch_interval: int = MAX_PITCH_INTERVAL,
         pitch_intervals_max_time_dist: int | float = PITCH_INTERVALS_MAX_TIME_DIST,
         drums_pitch_range: tuple[int, int] = DRUM_PITCH_RANGE,
+        ac_compute_on_empty: bool = AC_COMPUTE_EMPTY,
         ac_polyphony_track: bool = AC_POLYPHONY_TRACK,
         ac_polyphony_bar: bool = AC_POLYPHONY_BAR,
         ac_polyphony_min: int = AC_POLYPHONY_MIN,
@@ -822,6 +826,7 @@ class TokenizerConfig:
                 )
 
         # Attribute controls
+        self.ac_compute_on_empty = ac_compute_on_empty
         self.ac_polyphony_track = ac_polyphony_track
         self.ac_polyphony_bar = ac_polyphony_bar
         self.ac_polyphony_min = ac_polyphony_min

@@ -46,10 +46,13 @@ class BarOnsetPolyphony(BarAttributeControl):
     ) -> list[Event]:
         del controls_soa, pitch_bends_soa, time_division
         _, counts_onsets = np.unique(notes_soa["time"], return_counts=True)
-        onset_poly_min, onset_poly_max = np.min(counts_onsets), np.max(counts_onsets)
+
+        onset_poly_max, onset_poly_min = 0, 0
+        if len(counts_onsets) > 0:
+            onset_poly_min, onset_poly_max = np.min(counts_onsets), np.max(counts_onsets)
 
         min_poly = min(max(onset_poly_min, self.min_polyphony), self.max_polyphony)
-        max_poly = min(onset_poly_max, self.max_polyphony)
+        max_poly = min(max(onset_poly_max, self.min_polyphony), self.max_polyphony)
         return [
             Event("ACBarOnsetPolyphonyMin", min_poly),
             Event("ACBarOnsetPolyphonyMax", max_poly),
@@ -93,7 +96,7 @@ class BarNoteDensity(BarAttributeControl):
         self.density_max = density_max
         super().__init__(
             tokens=[
-                *(f"ACBarNoteDensity_{i}" for i in range(density_max)),
+                *(f"ACBarNoteDensity_{i}" for i in range(self.density_max)),
                 f"ACBarNoteDensity_{self.density_max}+",
             ],
         )

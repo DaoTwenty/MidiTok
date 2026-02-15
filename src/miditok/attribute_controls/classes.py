@@ -43,6 +43,7 @@ class AttributeControl(ABC):
         ticks_bars: Sequence[int],
         ticks_beats: Sequence[int],
         bars_idx: Sequence[int],
+        compute_on_empty: bool = False
     ) -> list[Event]:
         """
         Compute the attribute control from a ``symusic.Track``.
@@ -54,6 +55,9 @@ class AttributeControl(ABC):
         :param bars_idx: **sorted** indexes of the bars to compute the bar-level control
             attributes from. If ``None`` is provided, the attribute controls are
             computed on all the bars. (default: ``None``)
+        :param compute_on_empty: If ``True``, attribute controls will be computed on 
+            empty bars. If ``False``, attribute controls tokens will 
+            only accompany non-empty bars (default: ``False``)
         :return: attribute control values.
         """
         raise NotImplementedError
@@ -69,6 +73,7 @@ class BarAttributeControl(AttributeControl, ABC):
         ticks_bars: Sequence[int],
         ticks_beats: Sequence[int],
         bars_idx: Sequence[int],
+        compute_on_empty: bool = False
     ) -> list[Event]:
         """
         Compute the attribute control from a ``symusic.Track``.
@@ -134,9 +139,11 @@ class BarAttributeControl(AttributeControl, ABC):
                 )
 
             # Compute attribute if the bar is not empty
+            # If compute_on_empty, the attributes are
+            # computed on every bar
             if note_end_idx is None or (
                 note_end_idx and note_end_idx > note_start_idx + 1
-            ):
+            ) or compute_on_empty:
                 notes_soa_bar = {
                     key: value[note_start_idx:note_end_idx]
                     for key, value in notes_soa.items()
@@ -150,7 +157,7 @@ class BarAttributeControl(AttributeControl, ABC):
                     for key, value in pitch_bends_soa.items()
                 }
                 # Check a second time in case it is the last bar
-                if len(notes_soa_bar["time"]) > 0:
+                if len(notes_soa_bar["time"]) > 0 or compute_on_empty:
                     attribute_controls_bar = self._compute_on_bar(
                         notes_soa_bar,
                         controls_soa_bar,

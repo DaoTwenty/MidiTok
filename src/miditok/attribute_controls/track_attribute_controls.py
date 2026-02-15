@@ -51,6 +51,7 @@ class TrackOnsetPolyphony(AttributeControl):
         ticks_bars: Sequence[int],
         ticks_beats: Sequence[int],
         bars_idx: Sequence[int],
+        compute_on_empty: bool = False
     ) -> list[Event]:
         """
         Compute the attribute control from a ``symusic.Track``.
@@ -118,6 +119,7 @@ class TrackNoteDuration(AttributeControl):
         ticks_bars: Sequence[int],
         ticks_beats: Sequence[int],
         bars_idx: Sequence[int],
+        compute_on_empty: bool = False
     ) -> list[Event]:
         """
         Compute the attribute control from a ``symusic.Track``.
@@ -182,6 +184,7 @@ class TrackNoteDensity(AttributeControl):
         ticks_bars: Sequence[int],
         ticks_beats: Sequence[int],
         bars_idx: Sequence[int],
+        compute_on_empty: bool = False
     ) -> list[Event]:
         """
         Compute the attribute control from a ``symusic.Track``.
@@ -259,6 +262,7 @@ class TrackRepetition(AttributeControl):
         ticks_bars: Sequence[int],
         ticks_beats: Sequence[int],
         bars_idx: Sequence[int],
+        compute_on_empty: bool = False
     ) -> list[Event]:
         """
         Compute the attribute control from a ``symusic.Track``.
