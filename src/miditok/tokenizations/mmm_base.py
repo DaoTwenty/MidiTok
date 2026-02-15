@@ -859,7 +859,7 @@ class MMM_Base(MusicTokenizer):
                 for i in range(self.config.additional_params["max_bar_embedding"])
             ]
         else:
-            vocab += [f"Bar_{self.config.additional_params["bar_start_value"]}"]
+            vocab += [f"Bar_{self.config.additional_params['bar_start_value']}"]
         if self.config.additional_params["use_bar_end_tokens"]:
             vocab.append("Bar_End")
 
