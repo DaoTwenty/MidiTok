@@ -29,6 +29,9 @@ from .constants import (
     AC_REPETITION_TRACK,
     AC_REPETITION_TRACK_NUM_BINS,
     AC_REPETITION_TRACK_NUM_CONSEC_BARS,
+    AC_TENSION_BAR_INST,
+    AC_TENSION_BAR_DRUM,
+    AC_TENSION_BAR_NUM_BINS,
     BEAT_RES,
     BEAT_RES_REST,
     CHORD_MAPS,
@@ -646,6 +649,9 @@ class TokenizerConfig:
         ac_repetition_track: bool = AC_REPETITION_TRACK,
         ac_repetition_track_num_bins: int = AC_REPETITION_TRACK_NUM_BINS,
         ac_repetition_track_num_consec_bars: int = AC_REPETITION_TRACK_NUM_CONSEC_BARS,
+        ac_tension_bar_inst: int = AC_TENSION_BAR_INST,
+        ac_tension_bar_drum: int = AC_TENSION_BAR_DRUM,
+        ac_tension_bar_num_bins: int = AC_TENSION_BAR_NUM_BINS,
         **kwargs,
     ) -> None:
         # Checks
@@ -842,6 +848,9 @@ class TokenizerConfig:
         self.ac_repetition_track = ac_repetition_track
         self.ac_repetition_track_num_bins = ac_repetition_track_num_bins
         self.ac_repetition_track_num_consec_bars = ac_repetition_track_num_consec_bars
+        self.ac_tension_bar_inst = ac_tension_bar_inst
+        self.ac_tension_bar_drum = ac_tension_bar_drum
+        self.ac_tension_bar_num_bins = ac_tension_bar_num_bins
 
         # Additional params
         self.additional_params = kwargs

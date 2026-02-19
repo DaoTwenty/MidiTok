@@ -5,6 +5,8 @@ from .bar_attribute_controls import (
     BarNoteDuration,
     BarOnsetPolyphony,
     BarPitchClass,
+    BarTensionDrum,
+    BarTensionInstrument
 )
 from .classes import AttributeControl, BarAttributeControl, create_random_ac_indexes
 from .track_attribute_controls import (
@@ -21,6 +23,8 @@ __all__ = (
     "BarNoteDuration",
     "BarOnsetPolyphony",
     "BarPitchClass",
+    "BarTensionDrum",
+    "BarTensionInstrument",
     "TrackNoteDensity",
     "TrackNoteDuration",
     "TrackOnsetPolyphony",

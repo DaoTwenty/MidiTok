@@ -50,10 +50,12 @@ from .attribute_controls import (
     BarNoteDuration,
     BarOnsetPolyphony,
     BarPitchClass,
+    BarTensionInstrument,
+    BarTensionDrum,
     TrackNoteDensity,
     TrackNoteDuration,
     TrackOnsetPolyphony,
-    TrackRepetition,
+    TrackRepetition
 )
 from .classes import Event, TokenizerConfig, TokSequence
 from .constants import (
@@ -325,6 +327,18 @@ class MusicTokenizer(ABC, HFHubMixin):
                     self.config.pitch_range,
                 )
             )
+        if self.config.ac_tension_bar_inst:
+            self.add_attribute_control(
+                BarTensionInstrument(
+                    self.config.ac_tension_bar_num_bins
+                )
+            )
+        if self.config.ac_tension_bar_drum:
+            self.add_attribute_control(
+                BarTensionDrum(
+                    self.config.ac_tension_bar_num_bins
+                )
+            )
 
     def add_attribute_control(self, attribute_control: AttributeControl) -> None:
         """
@@ -456,7 +470,11 @@ class MusicTokenizer(ABC, HFHubMixin):
             return 0
         return int(self._tpb_to_rest_array[ticks_per_beat][0])
 
-    def preprocess_score(self, score: Score) -> Score:
+    def preprocess_score(
+            self, 
+            score: Score,
+            keep_empty: bool = False
+        ) -> Score:
         r"""
         Pre-process a ``symusic.Score`` object to resample its time and events values.
 
@@ -539,11 +557,12 @@ class MusicTokenizer(ABC, HFHubMixin):
         for t in range(len(score.tracks) - 1, -1, -1):
             # Delete track only there is nothing inside being used
             program = -1 if score.tracks[t].is_drum else score.tracks[t].program
-            if is_track_empty(
+            if (is_track_empty(
                 score.tracks[t],
                 check_pedals=self.config.use_sustain_pedals,
                 check_pitch_bend=self.config.use_pitch_bends,
-            ) or (self.config.use_programs and program not in self.config.programs):
+            ) and not keep_empty) or (self.config.use_programs and program not in self.config.programs):
+                print(f"Removing track {t}")
                 del score.tracks[t]
                 continue
 
@@ -572,7 +591,7 @@ class MusicTokenizer(ABC, HFHubMixin):
                 score.tracks[t],
                 check_pedals=self.config.use_sustain_pedals,
                 check_pitch_bend=self.config.use_pitch_bends,
-            ):
+            ) and not keep_empty:
                 del score.tracks[t]
                 continue
 

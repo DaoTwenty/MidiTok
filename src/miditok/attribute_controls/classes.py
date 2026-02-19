@@ -32,8 +32,13 @@ class AttributeControl(ABC):
         their types and values.
     """
 
-    def __init__(self, tokens: Sequence[str]) -> None:
+    def __init__(
+            self, 
+            tokens: Sequence[str],
+            exclude_programs: Sequence[int] = [] # programs to exclude
+        ) -> None:
         self.tokens = tokens
+        self.exclude_programs = exclude_programs
 
     @abstractmethod
     def compute(
@@ -87,6 +92,10 @@ class BarAttributeControl(AttributeControl, ABC):
             computed on all the bars. (default: ``None``)
         :return: attribute control values.
         """
+
+        if track.program in self.exclude_programs:
+            return []
+
         del ticks_beats
         # List with indices of non-empty bars of the shape:
         # [track, bar, (bar_tick, [bar_attributes])]
@@ -95,6 +104,8 @@ class BarAttributeControl(AttributeControl, ABC):
 
         # Iterate over each track
         notes_soa = track.notes.numpy()
+        if len(notes_soa["time"]) == 0:
+            return []
         controls_soa = track.controls.numpy()
         pitch_bends_soa = track.pitch_bends.numpy()
         bar_ticks_track = ticks_bars[np.where(ticks_bars <= notes_soa["time"][-1])[0]]
