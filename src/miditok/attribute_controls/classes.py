@@ -93,9 +93,11 @@ class BarAttributeControl(AttributeControl, ABC):
         :return: attribute control values.
         """
 
-        if track.program in self.exclude_programs:
-            return []
+        effective_program = -1 if track.is_drum else track.program
 
+        if effective_program in self.exclude_programs:
+            return []
+        
         del ticks_beats
         # List with indices of non-empty bars of the shape:
         # [track, bar, (bar_tick, [bar_attributes])]
